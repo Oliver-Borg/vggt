@@ -139,6 +139,7 @@ def run_vggt_pipeline(base_out: str) -> VGGTProfiling:
 
 
 def save_timing(
+    base_out: str,
     input_path: str,
     name: str,
     choice: str,
@@ -165,6 +166,9 @@ def save_timing(
 
     with open("stats.json", "w") as f:
         json.dump(stats, f, indent=4)
+
+    with open(os.path.join(base_out, "stat.json"), "w") as f:
+        json.dump(stat, f, indent=4)
 
 
 def main():
@@ -213,7 +217,7 @@ def main():
 
     total_time = time.time() - t1
 
-    save_timing(input_path, name, args.choice, num_images, profiling)
+    save_timing(base_out, input_path, name, args.choice, num_images, profiling)
 
     print(f"\nPipeline finished. Results saved in: {base_out}")
     print(f"Time: {total_time:.2f}s")
