@@ -6,6 +6,7 @@
 
 import random
 import time
+from typing import TypedDict
 from line_profiler import profile
 import numpy as np
 import glob
@@ -92,7 +93,7 @@ def run_VGGT(model: VGGT, images, dtype, resolution=518):
     return extrinsic, intrinsic, depth_map, depth_conf
 
 
-def get_gpu_stats():
+def get_gpu_stats(reset: bool = True):
     """Returns the peak allocated and peak reserved memory in MB for the current device."""
     if not torch.cuda.is_available():
         return 0.0, 0.0
@@ -103,6 +104,9 @@ def get_gpu_stats():
     peak_alloc = torch.cuda.max_memory_allocated(device) / (1024**2)
     # Reserved: reserved memory
     peak_res = torch.cuda.max_memory_reserved(device) / (1024**2)
+
+    if torch.cuda.is_available() and reset:
+        torch.cuda.reset_peak_memory_stats()
 
     return peak_alloc, peak_res
 
@@ -123,6 +127,19 @@ def demo_fn(args):
     )
 
 
+class VGGTProfiling(TypedDict):
+    model_vram: tuple[float, float]
+    model_load_t: float
+    warmup_vram: tuple[float, float]
+    warmup_t: float
+    inference_vram: tuple[float, float]
+    inference_times: list[float]
+    image_load_t: float
+    point_cloud_processing_vram: tuple[float, float]
+    point_cloud_processing_t: float
+    saving_t: float
+
+
 @profile
 def run_vggt(
     scene_dir: str,
@@ -136,7 +153,8 @@ def run_vggt(
     max_query_pts: int = 4096,
     fine_tracking: bool = True,
     conf_thres_value: float = 5.0,
-) -> float:
+    num_profiling_runs: int = 0,
+) -> VGGTProfiling:
 
     # Print configuration
     print(
@@ -173,14 +191,17 @@ def run_vggt(
     print(f"Using dtype: {dtype}")
 
     # Run VGGT for camera and depth estimation
+    model_load_t1 = time.time()
     model = VGGT()
     _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
     model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
     model.eval()
     model = model.to(device)
-    peak_alloc, peak_res = get_gpu_stats()
-    print(f"Model loaded | Peak allocated GPU Mem: {peak_alloc:.2f} MB | Peak reserved GPU Mem: {peak_res:.2f} MB")
+    model_load_t2 = time.time()
+    model_alloc, model_res = model_vram = get_gpu_stats()
+    print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
 
+    image_load_t1 = time.time()
     # Get image paths and preprocess them
     image_dir = os.path.join(scene_dir, "images")
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
@@ -197,17 +218,28 @@ def run_vggt(
     images = images.to(device)
     original_coords = original_coords.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
+    image_load_t2 = time.time()
 
     # Run VGGT to estimate camera and depth
     # Run with 518x518 images
 
     # Warmup run
-    run_VGGT(model, images, dtype, vggt_fixed_resolution)
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-
-    t1 = time.time()
+    warmup_t1 = time.time()
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+    warmup_t2 = time.time()
+    warmup_vram = get_gpu_stats()
+
+    inf_times: list[float] = []
+    for _ in range(num_profiling_runs):
+        inf_t1 = time.time()
+        run_VGGT(model, images, dtype, vggt_fixed_resolution)
+        inf_t2 = time.time()
+        inf_times.append(inf_t2 - inf_t1)
+
+    inf_vram = get_gpu_stats()
+
+    processing_t1 = time.time()
+
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
 
     if use_ba:
@@ -310,7 +342,10 @@ def run_vggt(
         shift_point2d_to_original_res=True,
         shared_camera=shared_camera,
     )
-    t2 = time.time()
+    processing_t2 = time.time()
+    processing_vram = get_gpu_stats()
+
+    saving_t1 = time.time()
 
     print(f"Saving reconstruction to {scene_dir}/sparse")
     sparse_reconstruction_dir = os.path.join(scene_dir, "sparse")
@@ -319,8 +354,20 @@ def run_vggt(
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))
+    saving_t2 = time.time()
 
-    return t2 - t1
+    return VGGTProfiling(
+        model_vram=model_vram,
+        model_load_t=model_load_t2 - model_load_t1,
+        warmup_vram=warmup_vram,
+        warmup_t=warmup_t2 - warmup_t1,
+        inference_vram=inf_vram,
+        inference_times=inf_times,
+        image_load_t=image_load_t2 - image_load_t1,
+        point_cloud_processing_vram=processing_vram,
+        point_cloud_processing_t=processing_t2 - processing_t1,
+        saving_t=saving_t2 - saving_t1,
+    )
 
 
 def rename_colmap_recons_and_rescale_camera(

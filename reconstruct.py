@@ -8,9 +8,10 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import TypedDict
 import torch
 
-from demo_colmap import get_gpu_stats, run_vggt
+from demo_colmap import VGGTProfiling, get_gpu_stats, run_vggt
 
 
 def run_command(cmd: list[str]):
@@ -22,8 +23,11 @@ def run_command(cmd: list[str]):
         print(f"Error executing command: {e}")
         sys.exit(1)
 
+class COLMAPProfiling(TypedDict):
+    colmap_vram: tuple[float, float]
+    colmap_t: float
 
-def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_path: str) -> tuple[float, float, float]:
+def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_path: str) -> COLMAPProfiling:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
@@ -39,16 +43,15 @@ def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_pa
     total_time = time.time() - t1
 
     peak_alloc, peak_res = get_gpu_stats()
-    return total_time, peak_alloc, peak_res
+    return COLMAPProfiling(
+        colmap_vram=(peak_alloc, peak_res),
+        colmap_t=total_time,
+    )
 
 
-def run_vggt_pipeline(base_out: str) -> tuple[float, float, float]:
-    """Executes the VGGT transformer-based reconstruction and returns (time, peak_gpu_memory_mb)."""
-
-    total_time = run_vggt(scene_dir=base_out)
-
-    peak_alloc, peak_res = get_gpu_stats()
-    return total_time, peak_alloc, peak_res
+def run_vggt_pipeline(base_out: str) -> VGGTProfiling:
+    """Executes the VGGT transformer-based reconstruction"""
+    return run_vggt(scene_dir=base_out, num_profiling_runs=5)
 
 
 def save_timing(
@@ -56,26 +59,22 @@ def save_timing(
     name: str,
     choice: str,
     num_images: int,
-    total_time: float,
-    peak_alloc_gpu_mem: float,
-    peak_reserved_gpu_mem: float,
+    profiling: VGGTProfiling | COLMAPProfiling,
 ) -> None:
-    stats: list[dict[str, str | int | float]] = []
+    stats: list[dict[str, str | int | float | VGGTProfiling | COLMAPProfiling]] = []
     try:
         with open("stats.json", "r") as f:
             stats = json.load(f)
     except Exception:
         stats = []
 
-    stat: dict[str, str | int | float] = {
+    stat: dict[str, str | int | float | VGGTProfiling | COLMAPProfiling] = {
         "date": datetime.datetime.now().strftime("%Y/%m/%d, %H:%M:%S"),
         "input_path": input_path,
         "name": name,
         "type": choice,
         "num_images": num_images,
-        "total_time": round(total_time, 3),
-        "peak_alloc_gpu_mem_mb": round(peak_alloc_gpu_mem, 3),
-        "peak_reserved_gpu_mem_mb": round(peak_reserved_gpu_mem, 3),
+        "profiling": profiling,
     }
 
     stats.append(stat)
@@ -119,14 +118,20 @@ def main():
     for img in all_images:
         shutil.copy2(os.path.join(input_path, img), os.path.join(images_path, img))
 
-    if args.choice == "colmap":
-        total_time, peak_alloc, peak_res = run_colmap_pipeline(base_out, images_path, db_path, sparse_path)
-    elif args.choice == "vggt":
-        total_time, peak_alloc, peak_res = run_vggt_pipeline(base_out)
-    else:
-        total_time, peak_alloc, peak_res = 0, 0, 0
+    t1 = time.time()
 
-    save_timing(input_path, name, args.choice, num_images, total_time, peak_alloc, peak_res)
+    if args.choice == "colmap":
+        profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path)
+    elif args.choice == "vggt":
+        profiling = run_vggt_pipeline(base_out)
+    else:
+        raise ValueError("Invalid choice")
+
+    total_time = time.time() - t1
+
+    peak_alloc, peak_res = get_gpu_stats()
+
+    save_timing(input_path, name, args.choice, num_images, profiling)
 
     print(f"\nPipeline finished. Results saved in: {base_out}")
     print(
