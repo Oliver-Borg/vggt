@@ -6,12 +6,38 @@ from random import shuffle
 import random
 import shutil
 import subprocess
-import sys
+import threading
 import time
 from typing import TypedDict
 import torch
 
-from demo_colmap import VGGTProfiling, get_gpu_stats, run_vggt
+from demo_colmap import VGGTProfiling, run_vggt
+
+
+class GPUMonitor(threading.Thread):
+    def __init__(self, delay: float = 0.1):
+        # TODO Replace this with nsight or pynvml
+        super().__init__()
+        self.stopped = False
+        self.delay = delay
+        self.peak_memory = 0
+        self.gpu_id = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0]
+
+    def run(self):
+        while not self.stopped:
+            try:
+                out = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits", f"--id={self.gpu_id}"]
+                )
+                current_mem = int(out.decode("utf-8").strip())
+                if current_mem > self.peak_memory:
+                    self.peak_memory = current_mem
+            except Exception:
+                pass
+            time.sleep(self.delay)
+
+    def stop(self):
+        self.stopped = True
 
 
 def run_command(cmd: list[str]):
@@ -19,33 +45,46 @@ def run_command(cmd: list[str]):
     print(f"Running: {' '.join(cmd)}")
     try:
         subprocess.run(cmd, check=True)
+        return True
     except subprocess.CalledProcessError as e:
         print(f"Error executing command: {e}")
-        sys.exit(1)
+        return False
+
 
 class COLMAPProfiling(TypedDict):
-    colmap_vram: tuple[float, float]
+    colmap_vram_mb: tuple[float, float]
     colmap_t: float
+    failed: bool
+
 
 def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_path: str) -> COLMAPProfiling:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
+    monitor = GPUMonitor(delay=0.1)
+    monitor.start()
+
     t1 = time.time()
-    run_command(["colmap", "feature_extractor", "--database_path", db_path, "--image_path", images_path])
 
-    run_command(["colmap", "exhaustive_matcher", "--database_path", db_path])
+    passed = True
 
-    run_command(
-        ["colmap", "mapper", "--database_path", db_path, "--image_path", images_path, "--output_path", sparse_path]
+    passed = (
+        run_command(["colmap", "feature_extractor", "--database_path", db_path, "--image_path", images_path])
+        and run_command(["colmap", "exhaustive_matcher", "--database_path", db_path])
+        and run_command(
+            ["colmap", "mapper", "--database_path", db_path, "--image_path", images_path, "--output_path", sparse_path]
+        )
     )
     total_time = time.time() - t1
 
-    peak_alloc, peak_res = get_gpu_stats()
+    monitor.stop()
+    monitor.join()
+
     return COLMAPProfiling(
-        colmap_vram=(peak_alloc, peak_res),
+        colmap_vram_mb=(monitor.peak_memory, monitor.peak_memory),
         colmap_t=total_time,
+        failed=not passed,
     )
 
 
@@ -129,14 +168,10 @@ def main():
 
     total_time = time.time() - t1
 
-    peak_alloc, peak_res = get_gpu_stats()
-
     save_timing(input_path, name, args.choice, num_images, profiling)
 
     print(f"\nPipeline finished. Results saved in: {base_out}")
-    print(
-        f"Time: {total_time:.2f}s | Peak allocated GPU Mem: {peak_alloc:.2f} MB | Peak reserved GPU Mem: {peak_res:.2f} MB"
-    )
+    print(f"Time: {total_time:.2f}s")
 
 
 if __name__ == "__main__":
