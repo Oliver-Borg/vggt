@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import random
+import time
+from line_profiler import profile
 import numpy as np
 import glob
 import os
@@ -62,7 +64,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_VGGT(model, images, dtype, resolution=518):
+def run_VGGT(model: VGGT, images, dtype, resolution=518):
     # images: [B, 3, H, W]
 
     assert len(images.shape) == 4
@@ -90,23 +92,84 @@ def run_VGGT(model, images, dtype, resolution=518):
     return extrinsic, intrinsic, depth_map, depth_conf
 
 
+def get_gpu_stats():
+    """Returns the peak allocated and peak reserved memory in MB for the current device."""
+    if not torch.cuda.is_available():
+        return 0.0, 0.0
+
+    assert torch.cuda.device_count() == 1
+    device = torch.device("cuda:0")
+    # Allocated: actual tensors
+    peak_alloc = torch.cuda.max_memory_allocated(device) / (1024**2)
+    # Reserved: reserved memory
+    peak_res = torch.cuda.max_memory_reserved(device) / (1024**2)
+
+    return peak_alloc, peak_res
+
+
 def demo_fn(args):
+    return run_vggt(
+        scene_dir=args.scene_dir,
+        seed=args.seed,
+        use_ba=args.use_ba,
+        max_reproj_error=args.max_reproj_error,
+        shared_camera=args.shared_camera,
+        camera_type=args.camera_type,
+        vis_thresh=args.vis_thresh,
+        query_frame_num=args.query_frame_num,
+        max_query_pts=args.max_query_pts,
+        fine_tracking=args.fine_tracking,
+        conf_thres_value=args.conf_thres_value,
+    )
+
+
+@profile
+def run_vggt(
+    scene_dir: str,
+    seed: int = 42,
+    use_ba: bool = False,
+    max_reproj_error: float = 8.0,
+    shared_camera: bool = False,
+    camera_type: str = "SIMPLE_PINHOLE",
+    vis_thresh: float = 0.2,
+    query_frame_num: int = 8,
+    max_query_pts: int = 4096,
+    fine_tracking: bool = True,
+    conf_thres_value: float = 5.0,
+) -> float:
+
     # Print configuration
-    print("Arguments:", vars(args))
+    print(
+        "Arguments:",
+        {
+            "scene_dir": scene_dir,
+            "seed": seed,
+            "use_ba": use_ba,
+            "max_reproj_error": max_reproj_error,
+            "shared_camera": shared_camera,
+            "camera_type": camera_type,
+            "vis_thresh": vis_thresh,
+            "query_frame_num": query_frame_num,
+            "max_query_pts": max_query_pts,
+            "fine_tracking": fine_tracking,
+            "conf_thres_value": conf_thres_value,
+        },
+    )
 
     # Set seed for reproducibility
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)  # for multi-GPU
-    print(f"Setting seed as: {args.seed}")
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # for multi-GPU
+    print(f"Setting seed as: {seed}")
 
     # Set device and dtype
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    gpu_num = torch.cuda.current_device() if torch.cuda.is_available() else -1
+    print(f"Using device: {device} ({gpu_num})")
     print(f"Using dtype: {dtype}")
 
     # Run VGGT for camera and depth estimation
@@ -115,10 +178,11 @@ def demo_fn(args):
     model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
     model.eval()
     model = model.to(device)
-    print(f"Model loaded")
+    peak_alloc, peak_res = get_gpu_stats()
+    print(f"Model loaded | Peak allocated GPU Mem: {peak_alloc:.2f} MB | Peak reserved GPU Mem: {peak_res:.2f} MB")
 
     # Get image paths and preprocess them
-    image_dir = os.path.join(args.scene_dir, "images")
+    image_dir = os.path.join(scene_dir, "images")
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
@@ -136,13 +200,20 @@ def demo_fn(args):
 
     # Run VGGT to estimate camera and depth
     # Run with 518x518 images
+
+    # Warmup run
+    run_VGGT(model, images, dtype, vggt_fixed_resolution)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+    t1 = time.time()
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
 
-    if args.use_ba:
+    if use_ba:
         image_size = np.array(images.shape[-2:])
         scale = img_load_resolution / vggt_fixed_resolution
-        shared_camera = args.shared_camera
+        shared_camera = shared_camera
 
         with torch.cuda.amp.autocast(dtype=dtype):
             # Predicting Tracks
@@ -157,17 +228,17 @@ def demo_fn(args):
                 conf=depth_conf,
                 points_3d=points_3d,
                 masks=None,
-                max_query_pts=args.max_query_pts,
-                query_frame_num=args.query_frame_num,
+                max_query_pts=max_query_pts,
+                query_frame_num=query_frame_num,
                 keypoint_extractor="aliked+sp",
-                fine_tracking=args.fine_tracking,
+                fine_tracking=fine_tracking,
             )
 
             torch.cuda.empty_cache()
 
         # rescale the intrinsic matrix from 518 to 1024
         intrinsic[:, :2, :] *= scale
-        track_mask = pred_vis_scores > args.vis_thresh
+        track_mask = pred_vis_scores > vis_thresh
 
         # TODO: radial distortion, iterative BA, masks
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
@@ -177,9 +248,9 @@ def demo_fn(args):
             pred_tracks,
             image_size,
             masks=track_mask,
-            max_reproj_error=args.max_reproj_error,
+            max_reproj_error=max_reproj_error,
             shared_camera=shared_camera,
-            camera_type=args.camera_type,
+            camera_type=camera_type,
             points_rgb=points_rgb,
         )
 
@@ -192,7 +263,7 @@ def demo_fn(args):
 
         reconstruction_resolution = img_load_resolution
     else:
-        conf_thres_value = args.conf_thres_value
+        conf_thres_value = conf_thres_value
         max_points_for_colmap = 100000  # randomly sample 3D points
         shared_camera = False  # in the feedforward manner, we do not support shared camera
         camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
@@ -239,16 +310,17 @@ def demo_fn(args):
         shift_point2d_to_original_res=True,
         shared_camera=shared_camera,
     )
+    t2 = time.time()
 
-    print(f"Saving reconstruction to {args.scene_dir}/sparse")
-    sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse")
+    print(f"Saving reconstruction to {scene_dir}/sparse")
+    sparse_reconstruction_dir = os.path.join(scene_dir, "sparse")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
 
     # Save point cloud for fast visualization
-    trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.scene_dir, "sparse/points.ply"))
+    trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))
 
-    return True
+    return t2 - t1
 
 
 def rename_colmap_recons_and_rescale_camera(

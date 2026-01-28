@@ -10,6 +10,9 @@ import sys
 import time
 import torch
 
+from demo_colmap import get_gpu_stats, run_vggt
+
+
 def run_command(cmd: list[str]):
     """Executes a shell command and ensures it succeeds."""
     print(f"Running: {' '.join(cmd)}")
@@ -19,14 +22,12 @@ def run_command(cmd: list[str]):
         print(f"Error executing command: {e}")
         sys.exit(1)
 
-def gpu_memory():
-    return torch.cuda.max_memory_allocated() / (1024 ** 2) if torch.cuda.is_available() else 0
 
-def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_path: str) -> tuple[float, float]:
+def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_path: str) -> tuple[float, float, float]:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
-    
+
     t1 = time.time()
     run_command(["colmap", "feature_extractor", "--database_path", db_path, "--image_path", images_path])
 
@@ -36,23 +37,29 @@ def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_pa
         ["colmap", "mapper", "--database_path", db_path, "--image_path", images_path, "--output_path", sparse_path]
     )
     total_time = time.time() - t1
-    
-    peak_mem = gpu_memory()
-    return total_time, peak_mem
 
-def run_vggt_pipeline(base_out: str) -> tuple[float, float]:
+    peak_alloc, peak_res = get_gpu_stats()
+    return total_time, peak_alloc, peak_res
+
+
+def run_vggt_pipeline(base_out: str) -> tuple[float, float, float]:
     """Executes the VGGT transformer-based reconstruction and returns (time, peak_gpu_memory_mb)."""
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-        
-    t1 = time.time()
-    run_command(["python", "demo_colmap.py", f"--scene_dir={base_out}"])
-    total_time = time.time() - t1
-    
-    peak_mem = gpu_memory()
-    return total_time, peak_mem
 
-def save_timing(input_path: str, name: str, choice: str, num_images: int, total_time: float, peak_gpu_mem: float) -> None:
+    total_time = run_vggt(scene_dir=base_out)
+
+    peak_alloc, peak_res = get_gpu_stats()
+    return total_time, peak_alloc, peak_res
+
+
+def save_timing(
+    input_path: str,
+    name: str,
+    choice: str,
+    num_images: int,
+    total_time: float,
+    peak_alloc_gpu_mem: float,
+    peak_reserved_gpu_mem: float,
+) -> None:
     stats: list[dict[str, str | int | float]] = []
     try:
         with open("stats.json", "r") as f:
@@ -67,13 +74,15 @@ def save_timing(input_path: str, name: str, choice: str, num_images: int, total_
         "type": choice,
         "num_images": num_images,
         "total_time": round(total_time, 3),
-        "peak_gpu_mem_mb": round(peak_gpu_mem, 3),
+        "peak_alloc_gpu_mem_mb": round(peak_alloc_gpu_mem, 3),
+        "peak_reserved_gpu_mem_mb": round(peak_reserved_gpu_mem, 3),
     }
 
     stats.append(stat)
 
     with open("stats.json", "w") as f:
         json.dump(stats, f, indent=4)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run COLMAP or VGGT reconstruction pipeline.")
@@ -108,19 +117,22 @@ def main():
 
     print(f"Copying {len(all_images)} images to {images_path}...")
     for img in all_images:
-        shutil.copy2(os.path.join(args.input, img), os.path.join(images_path, img))
+        shutil.copy2(os.path.join(input_path, img), os.path.join(images_path, img))
 
     if args.choice == "colmap":
-        total_time, peak_mem = run_colmap_pipeline(base_out, images_path, db_path, sparse_path)
+        total_time, peak_alloc, peak_res = run_colmap_pipeline(base_out, images_path, db_path, sparse_path)
     elif args.choice == "vggt":
-        total_time, peak_mem = run_vggt_pipeline(base_out)
+        total_time, peak_alloc, peak_res = run_vggt_pipeline(base_out)
     else:
-        total_time, peak_mem = 0, 0
+        total_time, peak_alloc, peak_res = 0, 0, 0
 
-    save_timing(args.input, args.name, args.choice, num_images, total_time, peak_mem)
+    save_timing(input_path, name, args.choice, num_images, total_time, peak_alloc, peak_res)
 
     print(f"\nPipeline finished. Results saved in: {base_out}")
-    print(f"Time: {total_time:.2f}s | Peak GPU Mem: {peak_mem:.2f} MB")
+    print(
+        f"Time: {total_time:.2f}s | Peak allocated GPU Mem: {peak_alloc:.2f} MB | Peak reserved GPU Mem: {peak_res:.2f} MB"
+    )
+
 
 if __name__ == "__main__":
     main()
