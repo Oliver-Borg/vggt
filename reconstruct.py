@@ -57,7 +57,9 @@ class COLMAPProfiling(TypedDict):
     failed: bool
 
 
-def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_path: str) -> COLMAPProfiling:
+def run_colmap_pipeline(
+    base_out: str, images_path: str, db_path: str, sparse_path: str, low_view_count: bool = False
+) -> COLMAPProfiling:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
@@ -69,12 +71,55 @@ def run_colmap_pipeline(base_out: str, images_path: str, db_path: str, sparse_pa
 
     passed = True
 
+    matcher_args = ["colmap", "exhaustive_matcher", "--database_path", db_path]
+    if low_view_count:
+        matcher_args.extend(
+            [
+                "--FeatureMatching.guided_matching",
+                "1",
+                "--TwoViewGeometry.min_num_inliers",
+                "10",
+                "--TwoViewGeometry.min_inlier_ratio",
+                "0.15",
+            ]
+        )
+
+    mapper_args = [
+        "colmap",
+        "mapper",
+        "--database_path",
+        db_path,
+        "--image_path",
+        images_path,
+        "--output_path",
+        sparse_path,
+    ]
+    if low_view_count:
+        mapper_args.extend(
+            [
+                "--Mapper.init_min_tri_angle",
+                "1.0",
+                "--Mapper.init_min_num_inliers",
+                "15",
+                "--Mapper.abs_pose_min_num_inliers",
+                "8",
+                "--Mapper.tri_ignore_two_view_tracks",
+                "0",
+                "--Mapper.min_model_size",
+                "2",
+                "--Mapper.init_num_trials",
+                "1000",
+                "--Mapper.min_num_matches",
+                "10",
+                "--Mapper.ba_local_max_num_iterations",
+                "50",
+            ]
+        )
+
     passed = (
         run_command(["colmap", "feature_extractor", "--database_path", db_path, "--image_path", images_path])
-        and run_command(["colmap", "exhaustive_matcher", "--database_path", db_path])
-        and run_command(
-            ["colmap", "mapper", "--database_path", db_path, "--image_path", images_path, "--output_path", sparse_path]
-        )
+        and run_command(matcher_args)
+        and run_command(mapper_args)
     )
     total_time = time.time() - t1
 
@@ -160,7 +205,7 @@ def main():
     t1 = time.time()
 
     if args.choice == "colmap":
-        profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path)
+        profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=num_images < 50)
     elif args.choice == "vggt":
         profiling = run_vggt_pipeline(base_out)
     else:
