@@ -128,14 +128,14 @@ def demo_fn(args):
 
 
 class VGGTProfiling(TypedDict):
-    model_vram: tuple[float, float]
+    model_vram_mb: tuple[float, float]
     model_load_t: float
-    warmup_vram: tuple[float, float]
+    warmup_vram_mb: tuple[float, float]
     warmup_t: float
-    inference_vram: tuple[float, float]
+    inference_vram_mb: tuple[float, float]
     inference_times: list[float]
     image_load_t: float
-    point_cloud_processing_vram: tuple[float, float]
+    point_cloud_processing_vram_mb: tuple[float, float]
     point_cloud_processing_t: float
     saving_t: float
 
@@ -198,7 +198,7 @@ def run_vggt(
     model.eval()
     model = model.to(device)
     model_load_t2 = time.time()
-    model_alloc, model_res = model_vram = get_gpu_stats()
+    model_alloc, model_res = model_vram_mb = get_gpu_stats()
     print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
 
     image_load_t1 = time.time()
@@ -227,7 +227,7 @@ def run_vggt(
     warmup_t1 = time.time()
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
     warmup_t2 = time.time()
-    warmup_vram = get_gpu_stats()
+    warmup_vram_mb = get_gpu_stats()
 
     inf_times: list[float] = []
     for _ in range(num_profiling_runs):
@@ -236,7 +236,8 @@ def run_vggt(
         inf_t2 = time.time()
         inf_times.append(inf_t2 - inf_t1)
 
-    inf_vram = get_gpu_stats()
+    inf_alloc, inf_res = inf_vram_mb = get_gpu_stats()
+    print(f"Inference run | Peak allocated GPU Mem: {inf_alloc:.2f} MB | Peak reserved GPU Mem: {inf_res:.2f} MB")
 
     processing_t1 = time.time()
 
@@ -343,7 +344,7 @@ def run_vggt(
         shared_camera=shared_camera,
     )
     processing_t2 = time.time()
-    processing_vram = get_gpu_stats()
+    processing_vram_mb = get_gpu_stats()
 
     saving_t1 = time.time()
 
@@ -357,14 +358,14 @@ def run_vggt(
     saving_t2 = time.time()
 
     return VGGTProfiling(
-        model_vram=model_vram,
+        model_vram_mb=model_vram_mb,
         model_load_t=model_load_t2 - model_load_t1,
-        warmup_vram=warmup_vram,
+        warmup_vram_mb=warmup_vram_mb,
         warmup_t=warmup_t2 - warmup_t1,
-        inference_vram=inf_vram,
+        inference_vram_mb=inf_vram_mb,
         inference_times=inf_times,
         image_load_t=image_load_t2 - image_load_t1,
-        point_cloud_processing_vram=processing_vram,
+        point_cloud_processing_vram_mb=processing_vram_mb,
         point_cloud_processing_t=processing_t2 - processing_t1,
         saving_t=saving_t2 - saving_t1,
     )
