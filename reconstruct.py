@@ -178,12 +178,14 @@ def main():
     parser.add_argument("--name", required=True, help="Output folder name (e.g., garden_8)")
     parser.add_argument("--choice", choices=["colmap", "vggt"], required=True, help="Pipeline to run")
     parser.add_argument("--num_images", type=int, default=None, help="Limit the number of images to process")
+    parser.add_argument("--seed", type=int, default=42, help="Seed for the random shuffling of images")
 
     args = parser.parse_args()
 
     name = args.name.strip("/")
     if args.num_images:
         name = f"{name}_n{args.num_images}"
+    name = f"{name}_s{args.seed}"
     base_out = f"./{args.choice}_outputs/{name}"
     sparse_path = os.path.join(base_out, "sparse")
     images_path = os.path.join(base_out, "images")
@@ -195,7 +197,7 @@ def main():
     input_path: str = args.input
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
-    random.seed(42)
+    random.seed(args.seed)
     shuffle(all_images)
 
     if args.num_images:
