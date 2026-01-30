@@ -4,103 +4,132 @@ import os
 import glob
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import Any
+from typing import Any, Dict, List, Set
 
 
-def load_all_results(scene_name: str) -> dict[str, dict[int, list[dict[str, Any]]]]:
-    """
-    Finds and loads all eval_results.json files for a specific scene.
-    Groups results by num_images regardless of seed.
-    """
-    data = {"colmap": {}, "vggt": {}}
-
-    for choice in ["colmap", "vggt"]:
-        pattern = f"{choice}_outputs/{scene_name}_n*_s*"
-        folders = glob.glob(pattern)
-
-        for folder in folders:
-            try:
-                num_images = int(folder.split("_")[-2].strip("n"))
-            except ValueError:
-                continue
-
+def load_results(choice: str, scene_name: str) -> Dict[int, List[Dict[str, Any]]]:
+    """Loads SfM eval_results.json files."""
+    data = {}
+    pattern = f"{choice}_outputs/{scene_name}_n*_s*"
+    for folder in glob.glob(pattern):
+        try:
+            parts = folder.split("_")
+            num_images = int([p for p in parts if p.startswith("n")][-1].strip("n"))
             eval_file = os.path.join(folder, "eval_results.json")
             if os.path.exists(eval_file):
                 with open(eval_file, "r") as f:
                     res = json.load(f)
-                    if "error" not in res["metrics"]:
-                        if num_images not in data[choice]:
-                            data[choice][num_images] = []
-                        data[choice][num_images].append(res)
+                    if "metrics" in res and "error" not in res["metrics"]:
+                        data.setdefault(num_images, []).append(res)
+        except (ValueError, IndexError):
+            continue
+    return data
+
+
+def load_gsplat_results(choice: str, scene_name: str) -> Dict[int, List[Dict[str, Any]]]:
+    """Loads gsplat val_step29999.json files."""
+    data = {}
+    base_path = os.path.expanduser("~/work/git/gsplat/results")
+    pattern = os.path.join(base_path, f"{choice}_outputs", f"{scene_name}_n*_s*", "stats", "val_step29999.json")
+
+    for stat_file in glob.glob(pattern):
+        try:
+            folder_name = stat_file.split("/")[-3]
+            num_images = int(folder_name.split("_n")[-1].split("_s")[0])
+            with open(stat_file, "r") as f:
+                data.setdefault(num_images, []).append(json.load(f))
+        except (ValueError, IndexError):
+            continue
     return data
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Plot aggregated reconstruction metrics vs view count.")
-    parser.add_argument("--name", required=True, help="Scene name prefix, e.g., bonsai_8")
+    parser = argparse.ArgumentParser(description="Plot SfM and gsplat metrics on separate subplots.")
+    parser.add_argument("--name", required=True, help="Scene name, e.g., bonsai_8")
     args = parser.parse_args()
 
-    results = load_all_results(args.name)
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    # Create 4 subplots: RRE, RTE, PSNR, LPIPS
+    fig, axes = plt.subplots(1, 4, figsize=(26, 6))
+    ax_rre, ax_rte, ax_psnr, ax_lpips = axes
 
     styles = {
-        "colmap": {"color": "#E63946", "marker": "o", "label": "COLMAP (Classic)"},
-        "vggt": {"color": "#457B9D", "marker": "s", "label": "VGGT (Transformer)"},
+        "colmap": {"color": "#E63946", "marker": "o", "label": "COLMAP"},
+        "vggt": {"color": "#457B9D", "marker": "s", "label": "VGGT"},
     }
 
+    all_x: Set[int] = set()
+
     for choice in ["colmap", "vggt"]:
-        sorted_nums = sorted(results[choice].keys())
-        if not sorted_nums:
+        sfm_data = load_results(choice, args.name)
+        gs_data = load_gsplat_results(choice, args.name)
+
+        # Collect all x-values for axis scaling
+        union_nums = sorted(list(set(sfm_data.keys()) | set(gs_data.keys())))
+        if not union_nums:
             continue
+        all_x.update(union_nums)
 
-        means_rre, errs_rre = [], [[], []]
-        means_rte, errs_rte = [], [[], []]
+        # Prepare plotting data
+        plot_x_sfm, plot_x_gs = [], []
+        m_rre, e_rre = [], [[], []]
+        m_rte, e_rte = [], [[], []]
+        m_psnr, e_psnr = [], [[], []]
+        m_lpips, e_lpips = [], [[], []]
 
-        for n in sorted_nums:
-            rre_vals = [res["metrics"]["mean_rre_deg"] for res in results[choice][n]]
-            rte_vals = [res["metrics"]["mean_rte"] for res in results[choice][n]]
+        for n in union_nums:
+            if n in sfm_data:
+                plot_x_sfm.append(n)
+                rre_v = [r["metrics"]["mean_rre_deg"] for r in sfm_data[n]]
+                rte_v = [r["metrics"]["mean_rte"] for r in sfm_data[n]]
 
-            m_rre = np.mean(rre_vals)
-            means_rre.append(m_rre)
-            errs_rre[0].append(m_rre - np.min(rre_vals))
-            errs_rre[1].append(np.max(rre_vals) - m_rre)
+                for vals, m_list, e_list in [(rre_v, m_rre, e_rre), (rte_v, m_rte, e_rte)]:
+                    avg = np.mean(vals)
+                    m_list.append(avg)
+                    e_list[0].append(avg - np.min(vals))
+                    e_list[1].append(np.max(vals) - avg)
 
-            m_rte = np.mean(rte_vals)
-            means_rte.append(m_rte)
-            errs_rte[0].append(m_rte - np.min(rte_vals))
-            errs_rte[1].append(np.max(rte_vals) - m_rte)
+            if n in gs_data:
+                plot_x_gs.append(n)
+                psnr_v = [g["psnr"] for g in gs_data[n]]
+                lpips_v = [g["lpips"] for g in gs_data[n]]
 
-        ax1.errorbar(
-            sorted_nums, means_rre, yerr=errs_rre, **styles[choice], linewidth=2, capsize=4, elinewidth=1.5, alpha=0.8
-        )
-        ax2.errorbar(
-            sorted_nums, means_rte, yerr=errs_rte, **styles[choice], linewidth=2, capsize=4, elinewidth=1.5, alpha=0.8
-        )
+                for vals, m_list, e_list in [(psnr_v, m_psnr, e_psnr), (lpips_v, m_lpips, e_lpips)]:
+                    avg = np.mean(vals)
+                    m_list.append(avg)
+                    e_list[0].append(avg - np.min(vals))
+                    e_list[1].append(np.max(vals) - avg)
 
-    for ax, title, ylabel in zip(
-        [ax1, ax2],
-        ["Rotation Error ($RRE$)", "Translation Error ($RTE$)"],
-        ["Mean Error (degrees)", "Mean Error (normalized units)"],
-    ):
-        ax.set_title(f"{title} - {args.name}", fontsize=14, fontweight="bold")
+        # Plot Pose Metrics
+        if plot_x_sfm:
+            ax_rre.errorbar(plot_x_sfm, m_rre, yerr=e_rre, **styles[choice], capsize=4)
+            ax_rte.errorbar(plot_x_sfm, m_rte, yerr=e_rte, **styles[choice], capsize=4)
+
+        # Plot Reconstruction Metrics
+        if plot_x_gs:
+            ax_psnr.errorbar(plot_x_gs, m_psnr, yerr=e_psnr, **styles[choice], capsize=4)
+            ax_lpips.errorbar(plot_x_gs, m_lpips, yerr=e_lpips, **styles[choice], capsize=4)
+
+    # Formatting and Cleanup
+    all_x_ticks = sorted(list(all_x))
+    titles = ["Rotation ($RRE$)", "Translation ($RTE$)", "Quality ($PSNR$)", "Perceptual ($LPIPS$)"]
+    y_labels = ["Degrees ↓", "Norm. Units ↓", "dB ↑", "Score ↓"]
+
+    for ax, title, ylabel in zip(axes, titles, y_labels):
+        ax.set_xscale("log")
+        ax.set_xticks(all_x_ticks)
+        ax.set_xticklabels([str(x) for x in all_x_ticks])
+        ax.grid(True, which="major", ls="-", alpha=0.15)
+        ax.set_title(title, fontweight="bold", fontsize=14)
         ax.set_ylabel(ylabel, fontsize=12)
-        ax.set_xlabel("Number of Images", fontsize=12)
-        ax.set_xscale("log")
-        ax.grid(True, which="both", ls="-", alpha=0.2)
-        ax.legend()
+        ax.set_xlabel("Number of Images", fontsize=11)
 
-    all_x_values = sorted(list(set(list(results["colmap"].keys()) + list(results["vggt"].keys()))))
-    for ax in [ax1, ax2]:
-        ax.set_xscale("log")
-        ax.set_xticks(all_x_values)
-        ax.set_xticklabels([str(x) for x in all_x_values])
-        ax.minorticks_off()
+    # Legend on the first plot only to avoid duplication
+    ax_rre.legend(fontsize=10)
 
     plt.tight_layout()
-    out_name = f"plot_{args.name}_aggregated.png"
-    plt.savefig(out_name, dpi=300)
-    print(f"Aggregated plot saved to {out_name}")
+    out_file = f"full_evaluation_{args.name}.png"
+    plt.savefig(out_file, dpi=300)
+    print(f"Comprehensive plot saved: {out_file}")
     plt.show()
 
 
