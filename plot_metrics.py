@@ -1,25 +1,56 @@
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import glob
+import re
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import Any, Dict, List, Set
 
 
+@dataclass
+class Param:
+    name: str
+    pattern: str
+    prefix: str
+    cast: type[float | str | int]
+
+
+def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
+    regexes = [
+        Param(name="num_images", pattern=r"_n(\d+)", prefix="_n", cast=int),
+        Param(name="seed", pattern=r"_s(\d+)", prefix="_s", cast=int),
+        Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", prefix="_c", cast=float),
+    ]
+
+    params: dict[str, str | float | int | None] = {}
+
+    for param in regexes:
+        name = param.name
+        reg = param.pattern
+        if (match := re.search(reg, folder_name)) is not None:
+            params[name] = param.cast(match.group(1))
+        else:
+            params[name] = None
+    return params
+
+
 def load_results(choice: str, scene_name: str) -> Dict[int, List[Dict[str, Any]]]:
     """Loads SfM eval_results.json files."""
-    data = {}
+    data: Dict[int, List[Dict[str, Any]]] = {}
     pattern = f"{choice}_outputs/{scene_name}_n*_s*"
     for folder in glob.glob(pattern):
         try:
-            parts = folder.split("_")
-            num_images = int([p for p in parts if p.startswith("n")][-1].strip("n"))
+            params = extract_params(folder)
+            num_images: int = params["num_images"]  # type: ignore
+            assert num_images is not None
             eval_file = os.path.join(folder, "eval_results.json")
             if os.path.exists(eval_file):
                 with open(eval_file, "r") as f:
-                    res = json.load(f)
-                    if "metrics" in res and "error" not in res["metrics"]:
+                    res: dict[str, float | int | str | dict[str, Any] | None] = json.load(f)
+                    res.update(params)
+                    if "metrics" in res and "error" not in res["metrics"]:  # type: ignore
                         data.setdefault(num_images, []).append(res)
         except (ValueError, IndexError):
             continue
@@ -27,17 +58,22 @@ def load_results(choice: str, scene_name: str) -> Dict[int, List[Dict[str, Any]]
 
 
 def load_gsplat_results(choice: str, scene_name: str) -> Dict[int, List[Dict[str, Any]]]:
-    """Loads gsplat val_step29999.json files."""
-    data = {}
+    """Loads gsplat val_step6999.json files."""
+    data: Dict[int, List[Dict[str, Any]]] = {}
     base_path = os.path.expanduser("~/work/git/gsplat/results")
-    pattern = os.path.join(base_path, f"{choice}_outputs", f"{scene_name}_n*_s*", "stats", "val_step29999.json")
+    pattern = os.path.join(base_path, f"{choice}_outputs", f"{scene_name}_n*_s*", "stats", "val_step6999.json")
 
     for stat_file in glob.glob(pattern):
         try:
             folder_name = stat_file.split("/")[-3]
-            num_images = int(folder_name.split("_n")[-1].split("_s")[0])
+            params = extract_params(folder_name)
+            num_images: int = params["num_images"]  # type: ignore
+            assert num_images is not None
             with open(stat_file, "r") as f:
-                data.setdefault(num_images, []).append(json.load(f))
+                stats: dict[str, float | int | str | None] = json.load(f)
+                stats["folder_name"] = folder_name
+                stats.update(params)
+                data.setdefault(num_images, []).append(stats)
         except (ValueError, IndexError):
             continue
     return data
