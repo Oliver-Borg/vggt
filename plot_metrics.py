@@ -242,7 +242,11 @@ def main():
         for key, vals in filters.items():
             if key in df.columns:
                 print(f"Filtering {key} in {vals}")
-                df = df[df[key].isin(vals)]
+                # If filtering by conf_thres_value, keep colmap rows (which don't have this param)
+                if key == "conf_thres_value":
+                    df = df[df[key].isin(vals) | (df["method"] == "colmap")]
+                else:
+                    df = df[df[key].isin(vals)]
             else:
                 print(f"Warning: Filter key '{key}' not found in dataframe columns.")
 
