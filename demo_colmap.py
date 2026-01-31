@@ -313,9 +313,11 @@ def run_vggt(
         # (S, H, W, 3), with x, y coordinates and frame indices
         points_xyf = create_pixel_coordinate_grid(num_frames, height, width)
 
+        print(f"Confidence\tmin: {depth_conf.min():.1f}\tmax: {depth_conf.max():.1f}\tmean: {depth_conf.mean():.1f}")
+
         conf_mask = depth_conf >= conf_thres_value
         # at most writing 100000 3d points to colmap reconstruction object
-        conf_mask = randomly_limit_trues(conf_mask, max_points_for_colmap)
+        conf_mask = randomly_limit_trues(conf_mask, max_points_for_colmap, depth_conf=None)
 
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]
