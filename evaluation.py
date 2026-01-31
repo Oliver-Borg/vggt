@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import glob
 import json
 import os
 import numpy as np
@@ -152,14 +153,9 @@ def calculate_metrics(pred_poses: Dict[str, np.ndarray], gt_poses: Dict[str, np.
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate SfM reconstruction vs GT.")
-    parser.add_argument("--pred", required=True, type=str)
-    parser.add_argument("--gt", required=True, type=str)
-    args = parser.parse_args()
-
-    gt_poses = get_poses(args.gt)
-    pred_poses = get_poses(args.pred)
+def main(pred: str, gt: str) -> None:
+    gt_poses = get_poses(gt)
+    pred_poses = get_poses(pred)
 
     if not gt_poses or not pred_poses:
         print(f"Error: Missing or empty reconstruction in pred ({len(pred_poses)}) or gt ({len(gt_poses)})")
@@ -167,7 +163,7 @@ def main() -> None:
 
     metrics = calculate_metrics(pred_poses, gt_poses)
 
-    stat_json_path = os.path.join(args.pred, "stat.json")
+    stat_json_path = os.path.join(pred, "stat.json")
     profiling = {}
     if os.path.exists(stat_json_path):
         with open(stat_json_path, "r") as f:
@@ -175,18 +171,24 @@ def main() -> None:
 
     report: EvalReport = {
         "timestamp": datetime.datetime.now().strftime("%Y/%m/%d, %H:%M:%S"),
-        "pred_path": args.pred,
-        "gt_path": args.gt,
+        "pred_path": pred,
+        "gt_path": gt,
         "metrics": metrics,
         "profiling": profiling,
     }
 
-    out_file = os.path.join(args.pred, "eval_results.json")
+    out_file = os.path.join(pred, "eval_results.json")
     with open(out_file, "w") as f:
         json.dump(report, f, indent=4)
 
-    print(f"Evaluation Complete. Metrics: {metrics}")
+    print(f"Evaluation for {pred} Complete. Metrics: {metrics}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Evaluate SfM reconstruction vs GT.")
+    parser.add_argument("--pred-glob", required=True, type=str)
+    parser.add_argument("--gt", required=True, type=str)
+    args = parser.parse_args()
+
+    for pred in sorted(glob.glob(args.pred_glob)):
+        main(pred, args.gt)
