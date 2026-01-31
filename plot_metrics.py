@@ -4,7 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -110,6 +110,35 @@ def _parse_gsplat_json(data: Dict[str, float]) -> Dict[str, float | None]:
     return {"psnr": data.get("psnr"), "lpips": data.get("lpips")}
 
 
+def parse_filters(filter_str: str) -> Dict[str, List[Any]]:
+    """
+    Parses a filter string into a dictionary of lists.
+    Format: "key1=val1,val2;key2=val3"
+    Tries to infer int/float types.
+    """
+    filters = {}
+    if not filter_str:
+        return filters
+
+    for part in filter_str.split(";"):
+        if "=" not in part:
+            continue
+        key, vals = part.split("=", 1)
+        parsed_vals = []
+        for v in vals.split(","):
+            v = v.strip()
+            # Attempt type inference for easier filtering against numeric DF columns
+            try:
+                if "." in v:
+                    parsed_vals.append(float(v))
+                else:
+                    parsed_vals.append(int(v))
+            except ValueError:
+                parsed_vals.append(v)
+        filters[key.strip()] = parsed_vals
+    return filters
+
+
 def plot_metric(
     df: pd.DataFrame,
     x: str,
@@ -166,6 +195,7 @@ def main():
     parser.add_argument("--name", required=True, help="Scene name, e.g., bonsai_8")
     parser.add_argument("--x_axis", default="num_images", help="X-Axis key")
     parser.add_argument("--split_param", default=None, help="Optional param to split series, e.g., conf_thres_value")
+    parser.add_argument("--filter", default=None, help="Filter string, e.g. 'num_images=10,20;conf_thres_value=0.5'")
     args = parser.parse_args()
 
     df = load_metrics_to_df(args.name, methods=["colmap", "vggt"])
@@ -173,6 +203,20 @@ def main():
     if df.empty:
         print("No data found.")
         return
+
+    # Apply Filters
+    if args.filter:
+        filters = parse_filters(args.filter)
+        for key, vals in filters.items():
+            if key in df.columns:
+                print(f"Filtering {key} in {vals}")
+                df = df[df[key].isin(vals)]
+            else:
+                print(f"Warning: Filter key '{key}' not found in dataframe columns.")
+
+        if df.empty:
+            print("Dataframe is empty after filtering.")
+            return
 
     if args.split_param and args.split_param in df.columns:
         split_vals = df[args.split_param].fillna("").astype(str)
@@ -184,7 +228,6 @@ def main():
 
     base_colors = {"colmap": "#E63946", "vggt": "#457B9D"}
     base_markers = {"colmap": "o", "vggt": "s"}
-
 
     color_map = {}
     marker_map = {}
