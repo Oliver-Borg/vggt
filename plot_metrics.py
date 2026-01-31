@@ -149,6 +149,7 @@ def plot_metric(
     ylabel: str,
     colors: Dict[str, str],
     markers: Dict[str, str],
+    dashes: Dict[str, Any],
 ) -> None:
     """
     Generic plotting function using Seaborn.
@@ -166,7 +167,7 @@ def plot_metric(
         hue=series_col,
         style=series_col,
         markers=markers,
-        dashes=False,
+        dashes=dashes,
         palette=colors,
         errorbar=("pi", 100),
         err_style="bars",
@@ -221,27 +222,37 @@ def main():
     if args.split_param and args.split_param in df.columns:
         split_vals = df[args.split_param].fillna("").astype(str)
         df["plot_series"] = df["method"] + "-" + split_vals
+        unique_splits = sorted(df[args.split_param].unique())
     else:
         df["plot_series"] = df["method"]
+        unique_splits = ["colmap", "vggt"]
 
     unique_series = sorted(df["plot_series"].unique())
 
-    base_colors = {"colmap": "#E63946", "vggt": "#457B9D"}
-    base_markers = {"colmap": "o", "vggt": "s"}
+    style_config = {
+        "colmap": {"marker": "o", "dashes": ""},  # "" = Solid
+        "vggt": {"marker": "X", "dashes": (2, 2)},  # (2, 2) = Dashed
+    }
+
+    pal = sns.color_palette("tab10", n_colors=len(unique_splits))
+    val_to_color = dict(zip(unique_splits, pal))
 
     color_map = {}
     marker_map = {}
+    dash_map = {}
 
-    cmap_obj = plt.get_cmap("viridis")
+    for series in unique_series:
+        method = "colmap" if "colmap" in series else "vggt"
 
-    for i, series_name in enumerate(unique_series):
-        base_key = next((k for k in base_colors if k in series_name), "colmap")
-        marker_map[series_name] = base_markers.get(base_key, "o")
-
-        if args.split_param and base_key != series_name.rstrip("- "):
-            color_map[series_name] = cmap_obj(i / max(len(unique_series) - 1, 1))
+        if args.split_param:
+            val_str = series.replace(f"{method}-", "")
+            original_val = next((v for v in unique_splits if str(v) == val_str), None)
+            color_map[series] = val_to_color.get(original_val, "#333333")
         else:
-            color_map[series_name] = base_colors.get(base_key, "#333333")
+            color_map[series] = val_to_color.get(method, "#333333")
+
+        marker_map[series] = style_config[method]["marker"]
+        dash_map[series] = style_config[method]["dashes"]
 
     fig, axes = plt.subplots(1, 4, figsize=(26, 6))
 
@@ -263,11 +274,12 @@ def main():
             ylabel=config["ylabel"],
             colors=color_map,
             markers=marker_map,
+            dashes=dash_map,
         )
 
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        axes[0].legend(handles=handles, labels=labels, title="Method", fontsize=10)
+        axes[0].legend(handles=handles, labels=labels, title="Series", fontsize=10)
 
     plt.tight_layout()
     out_file = f"full_evaluation_{args.name}.png"
