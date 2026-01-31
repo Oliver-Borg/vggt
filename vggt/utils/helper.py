@@ -7,7 +7,7 @@
 import numpy as np
 
 
-def randomly_limit_trues(mask: np.ndarray, max_trues: int) -> np.ndarray:
+def randomly_limit_trues(mask: np.ndarray, max_trues: int, depth_conf: np.ndarray | None = None) -> np.ndarray:
     """
     If mask has more than max_trues True values,
     randomly keep only max_trues of them and set the rest to False.
@@ -18,9 +18,12 @@ def randomly_limit_trues(mask: np.ndarray, max_trues: int) -> np.ndarray:
     # if already within budget, return as-is
     if true_indices.size <= max_trues:
         return mask
-
-    # randomly pick which True positions to keep
-    sampled_indices = np.random.choice(true_indices, size=max_trues, replace=False)  # shape = (max_trues,)
+    
+    if depth_conf is not None:
+        sampled_indices = np.argsort(depth_conf.flatten())[-max_trues:]
+    else:
+        # randomly pick which True positions to keep
+        sampled_indices = np.random.choice(true_indices, size=max_trues, replace=False)  # shape = (max_trues,)
 
     # build new flat mask: True only at sampled positions
     limited_flat_mask = np.zeros(mask.size, dtype=bool)
