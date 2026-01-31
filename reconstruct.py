@@ -135,7 +135,7 @@ def run_colmap_pipeline(
 
 def run_vggt_pipeline(base_out: str, conf_thres_value: float = 0.0) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
-    return run_vggt(scene_dir=base_out, num_profiling_runs=5, conf_thres_value=conf_thres_value)
+    return run_vggt(scene_dir=base_out, num_profiling_runs=0, conf_thres_value=conf_thres_value)
 
 
 def save_timing(
@@ -171,38 +171,38 @@ def save_timing(
         json.dump(stat, f, indent=4)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Run COLMAP or VGGT reconstruction pipeline.")
-
-    parser.add_argument("--input", required=True, help="Path to the input images folder")
-    parser.add_argument("--name", required=True, help="Output folder name (e.g., garden_8)")
-    parser.add_argument("--choice", choices=["colmap", "vggt"], required=True, help="Pipeline to run")
-    parser.add_argument("--num_images", type=int, default=None, help="Limit the number of images to process")
-    parser.add_argument("--seed", type=int, default=42, help="Seed for the random shuffling of images")
-    parser.add_argument("--conf_thres_value", type=float, default=5.0, help="Confidence threshold for point cloud")
-
-    args = parser.parse_args()
-
-    name = args.name.strip("/")
-    if args.num_images:
-        name = f"{name}_n{args.num_images}"
-    name = f"{name}_s{args.seed}_c{args.conf_thres_value}"
-    base_out = f"./{args.choice}_outputs/{name}"
+def main(
+    name: str,
+    input_path: str,
+    choice: str,
+    num_images: int | None,
+    seed: int,
+    conf_thres_value: float,
+    force: bool,
+):
+    name = name.strip("/")
+    if num_images:
+        name = f"{name}_n{num_images}"
+    name = f"{name}_s{seed}_c{conf_thres_value}"
+    base_out = f"./{choice}_outputs/{name}"
     sparse_path = os.path.join(base_out, "sparse")
     images_path = os.path.join(base_out, "images")
     db_path = os.path.join(base_out, "database.db")
 
+    if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
+        print(base_out, "has already been constructed.\nUse --force to force reconstruction.")
+        return
+
     os.makedirs(sparse_path, exist_ok=True)
     os.makedirs(images_path, exist_ok=True)
 
-    input_path: str = args.input
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
-    random.seed(args.seed)
+    random.seed(seed)
     shuffle(all_images)
 
-    if args.num_images:
-        all_images = all_images[: args.num_images]
+    if num_images:
+        all_images = all_images[:num_images]
     num_images = len(all_images)
 
     print(f"Copying {len(all_images)} images to {images_path}...")
@@ -211,20 +211,39 @@ def main():
 
     t1 = time.time()
 
-    if args.choice == "colmap":
+    if choice == "colmap":
         profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=num_images < 50)
-    elif args.choice == "vggt":
-        profiling = run_vggt_pipeline(base_out, args.conf_thres_value)
+    elif choice == "vggt":
+        profiling = run_vggt_pipeline(base_out, conf_thres_value)
     else:
         raise ValueError("Invalid choice")
 
     total_time = time.time() - t1
 
-    save_timing(base_out, input_path, name, args.choice, num_images, profiling)
+    save_timing(base_out, input_path, name, choice, num_images, profiling)
 
     print(f"\nPipeline finished. Results saved in: {base_out}")
     print(f"Time: {total_time:.2f}s")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Run COLMAP or VGGT reconstruction pipeline.")
+
+    parser.add_argument("--input", required=True, help="Path to the input images folder")
+    parser.add_argument("--name", required=True, help="Output folder name (e.g., garden_8)")
+    parser.add_argument("--choice", choices=["colmap", "vggt"], required=True, help="Pipeline to run")
+    parser.add_argument("--num_images", type=int, default=None, help="Limit the number of images to process")
+    parser.add_argument("--seed", type=int, default=42, help="Seed for the random shuffling of images")
+    parser.add_argument("--conf_thres_value", type=float, default=5.0, help="Confidence threshold for point cloud")
+    parser.add_argument("--force", type=bool, default=False, help="Force reconstruction")
+
+    args = parser.parse_args()
+    main(
+        name=args.name,
+        input_path=args.input,
+        choice=args.choice,
+        num_images=args.num_images,
+        seed=args.seed,
+        conf_thres_value=args.conf_thres_value,
+        force=args.force,
+    )
