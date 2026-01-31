@@ -133,9 +133,9 @@ def run_colmap_pipeline(
     )
 
 
-def run_vggt_pipeline(base_out: str) -> VGGTProfiling:
+def run_vggt_pipeline(base_out: str, conf_thres_value: float = 0.0) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
-    return run_vggt(scene_dir=base_out, num_profiling_runs=5)
+    return run_vggt(scene_dir=base_out, num_profiling_runs=5, conf_thres_value=conf_thres_value)
 
 
 def save_timing(
@@ -179,13 +179,14 @@ def main():
     parser.add_argument("--choice", choices=["colmap", "vggt"], required=True, help="Pipeline to run")
     parser.add_argument("--num_images", type=int, default=None, help="Limit the number of images to process")
     parser.add_argument("--seed", type=int, default=42, help="Seed for the random shuffling of images")
+    parser.add_argument("--conf_thres_value", type=float, default=5.0, help="Confidence threshold for point cloud")
 
     args = parser.parse_args()
 
     name = args.name.strip("/")
     if args.num_images:
         name = f"{name}_n{args.num_images}"
-    name = f"{name}_s{args.seed}"
+    name = f"{name}_s{args.seed}_c{args.conf_thres_value}"
     base_out = f"./{args.choice}_outputs/{name}"
     sparse_path = os.path.join(base_out, "sparse")
     images_path = os.path.join(base_out, "images")
@@ -213,7 +214,7 @@ def main():
     if args.choice == "colmap":
         profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=num_images < 50)
     elif args.choice == "vggt":
-        profiling = run_vggt_pipeline(base_out)
+        profiling = run_vggt_pipeline(base_out, args.conf_thres_value)
     else:
         raise ValueError("Invalid choice")
 
