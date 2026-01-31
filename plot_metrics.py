@@ -45,7 +45,7 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
         ("sfm", "{method}_outputs/{scene}_n*_s*/eval_results.json", _parse_sfm_json),
         (
             "gsplat",
-            os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step6999.json"),
+            os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step29999.json"),
             _parse_gsplat_json,
         ),
     ]
