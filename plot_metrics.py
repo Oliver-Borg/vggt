@@ -1,10 +1,11 @@
 import argparse
+from collections import OrderedDict
 import glob
 import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -150,10 +151,13 @@ def plot_metric(
     colors: Dict[str, str],
     markers: Dict[str, str],
     dashes: Dict[str, Any],
+    hlines: Dict[str, float] | None = None,
+    hranges: Dict[str, Tuple[float, float]] | None = None,
 ) -> None:
     """
     Generic plotting function using Seaborn.
     Plots line with markers and min/max error bars (PI 100).
+    Optionally adds horizontal reference lines (hlines) and shaded regions (hranges).
     """
     if df.empty or y not in df.columns or df[y].isnull().all():
         ax.text(0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes)
@@ -174,6 +178,33 @@ def plot_metric(
         ax=ax,
         err_kws={"capsize": 4},
     )
+
+    if hranges:
+        for series_name, (min_val, max_val) in hranges.items():
+            if pd.notna(min_val) and pd.notna(max_val):
+                region_color = colors.get(series_name, "gray")
+                ax.axhspan(
+                    ymin=min_val,
+                    ymax=max_val,
+                    color=region_color,
+                    alpha=0.1,
+                    edgecolor=None,
+                    linewidth=0,
+                )
+
+    if hlines:
+        for series_name, y_val in hlines.items():
+            if pd.notna(y_val):
+                line_color = colors.get(series_name, "gray")
+
+                ax.axhline(
+                    y=y_val,
+                    color=line_color,
+                    linestyle="-",
+                    alpha=0.8,
+                    label=series_name,
+                    linewidth=1.2,
+                )
 
     ax.set_title(title, fontweight="bold", fontsize=14)
     ax.set_ylabel(ylabel, fontsize=12)
@@ -230,8 +261,8 @@ def main():
     unique_series = sorted(df["plot_series"].unique())
 
     style_config = {
-        "colmap": {"marker": "o", "dashes": ""},  # "" = Solid
-        "vggt": {"marker": "X", "dashes": (2, 2)},  # (2, 2) = Dashed
+        "colmap": {"marker": "o", "dashes": ""},
+        "vggt": {"marker": "X", "dashes": (2, 2)},
     }
 
     pal = sns.color_palette("tab10", n_colors=len(unique_splits))
@@ -254,6 +285,19 @@ def main():
         marker_map[series] = style_config[method]["marker"]
         dash_map[series] = style_config[method]["dashes"]
 
+    colmap_means_by_series = {}
+    colmap_min_by_series = {}
+    colmap_max_by_series = {}
+
+    colmap_df = df[df["method"] == "colmap"]
+
+    if args.x_axis != "num_images" and not colmap_df.empty:
+        grouped = colmap_df.groupby("plot_series")
+
+        colmap_means_by_series = grouped.mean(numeric_only=True).to_dict(orient="index")
+        colmap_min_by_series = grouped.min(numeric_only=True).to_dict(orient="index")
+        colmap_max_by_series = grouped.max(numeric_only=True).to_dict(orient="index")
+
     fig, axes = plt.subplots(1, 4, figsize=(26, 6))
 
     metrics_config = [
@@ -264,8 +308,27 @@ def main():
     ]
 
     for ax, config in zip(axes, metrics_config):
+        plot_df = df
+        hlines_dict = OrderedDict()
+        hranges_dict = OrderedDict()
+
+        if args.x_axis != "num_images" and not colmap_df.empty:
+            plot_df = df[df["method"] != "colmap"]
+
+            for series_name, metric_values in list(
+                sorted(list(colmap_means_by_series.items()), key=lambda x: x[1].get(args.split_param))
+            ):
+                if config["y"] in metric_values:
+                    hlines_dict[series_name] = metric_values[config["y"]]
+
+            for series_name in colmap_min_by_series:
+                min_val = colmap_min_by_series[series_name].get(config["y"])
+                max_val = colmap_max_by_series[series_name].get(config["y"])
+                if min_val is not None and max_val is not None:
+                    hranges_dict[series_name] = (min_val, max_val)
+
         plot_metric(
-            df=df,
+            df=plot_df,
             x=args.x_axis,
             y=config["y"],
             series_col="plot_series",
@@ -275,6 +338,8 @@ def main():
             colors=color_map,
             markers=marker_map,
             dashes=dash_map,
+            hlines=hlines_dict,
+            hranges=hranges_dict,
         )
 
     handles, labels = axes[0].get_legend_handles_labels()
@@ -282,7 +347,7 @@ def main():
         axes[0].legend(handles=handles, labels=labels, title="Series", fontsize=10)
 
     plt.tight_layout()
-    out_file = f"full_evaluation_{args.name}.png"
+    out_file = f"full_evaluation {args.name} {args.x_axis} {args.split_param}.png"
     plt.savefig(out_file, dpi=300)
     print(f"Comprehensive plot saved: {out_file}")
     plt.show()
