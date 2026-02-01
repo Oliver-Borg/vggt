@@ -8,10 +8,10 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import TypedDict
+from typing import TypedDict, get_args
 import torch
 
-from demo_colmap import VGGTProfiling, run_vggt
+from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
 
 
 class GPUMonitor(threading.Thread):
@@ -133,9 +133,17 @@ def run_colmap_pipeline(
     )
 
 
-def run_vggt_pipeline(base_out: str, conf_thres_value: float = 0.0) -> VGGTProfiling:
+def run_vggt_pipeline(
+    base_out: str, conf_thres_value: float = 0.0, sampling_mode: SAMPLING_MODE = "random"
+) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
-    return run_vggt(scene_dir=base_out, num_profiling_runs=0, conf_thres_value=conf_thres_value)
+    return run_vggt(
+        scene_dir=base_out,
+        num_profiling_runs=0,
+        use_ba=sampling_mode=="ba",
+        conf_thres_value=conf_thres_value,
+        sampling_mode=sampling_mode,
+    )
 
 
 def save_timing(
@@ -179,11 +187,12 @@ def main(
     seed: int,
     conf_thres_value: float,
     force: bool,
+    sampling_mode: SAMPLING_MODE,
 ):
     name = name.strip("/")
     if num_images:
         name = f"{name}_n{num_images}"
-    name = f"{name}_s{seed}_c{conf_thres_value}"
+    name = f"{name}_s{seed}_c{conf_thres_value}_{sampling_mode}"
     base_out = f"./{choice}_outputs/{name}"
     sparse_path = os.path.join(base_out, "sparse")
     images_path = os.path.join(base_out, "images")
@@ -214,7 +223,7 @@ def main(
     if choice == "colmap":
         profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=num_images < 50)
     elif choice == "vggt":
-        profiling = run_vggt_pipeline(base_out, conf_thres_value)
+        profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode)
     else:
         raise ValueError("Invalid choice")
 
@@ -235,7 +244,14 @@ if __name__ == "__main__":
     parser.add_argument("--num_images", type=int, default=None, help="Limit the number of images to process")
     parser.add_argument("--seed", type=int, default=42, help="Seed for the random shuffling of images")
     parser.add_argument("--conf_thres_value", type=float, default=5.0, help="Confidence threshold for point cloud")
-    parser.add_argument("--force", type=bool, default=False, help="Force reconstruction")
+    parser.add_argument("--force", action="store_true", help="Force reconstruction")
+    parser.add_argument(
+        "--sampling-mode",
+        type=str,
+        default="random",
+        choices=list(get_args(SAMPLING_MODE)),
+        help="Force reconstruction",
+    )
 
     args = parser.parse_args()
     main(
@@ -246,4 +262,5 @@ if __name__ == "__main__":
         seed=args.seed,
         conf_thres_value=args.conf_thres_value,
         force=args.force,
+        sampling_mode=args.sampling_mode,
     )

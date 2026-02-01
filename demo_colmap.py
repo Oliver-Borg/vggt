@@ -6,7 +6,7 @@
 
 import random
 import time
-from typing import TypedDict
+from typing import Literal, TypedDict
 from line_profiler import profile
 import numpy as np
 import glob
@@ -24,13 +24,14 @@ import argparse
 from pathlib import Path
 import trimesh
 import pycolmap
+import matplotlib.pyplot as plt
 
 
 from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images_square
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
-from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
+from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues, uniform_limit_trues
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
 
@@ -40,6 +41,8 @@ from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np
 # TODO: add support for radial distortion, which needs extra_params
 # TODO: test with more cases
 # TODO: test different camera types
+
+SAMPLING_MODE = Literal["random", "confidence", "voxels", "none", "ba"]
 
 
 def parse_args():
@@ -140,6 +143,40 @@ class VGGTProfiling(TypedDict):
     saving_t: float
 
 
+def np_rgba(np_arr: np.ndarray, cmap: str) -> np.ndarray:
+    """
+    Convert a grayscale image to RGBA using a matplotlib colormap
+    Args:
+        np_arr (np.ndarray): The grayscale image
+        cmap (str): The name of the matplotlib colormap to use
+    Returns:
+        np.ndarray: The RGBA image
+    """
+
+    max_value = np_arr.max()
+
+    normalised = np_arr.astype(np.float32) / max_value
+    mapper = plt.get_cmap(cmap)
+    rgba = mapper(normalised)
+    rgba = rgba * 255
+    rgba = rgba.astype(np.uint8)
+    # rgba[np_arr == 0] = [21, 59, 106, 255] #153b6a
+    return rgba
+
+
+def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
+    """
+    Convert a grayscale image to RGB using a matplotlib colormap
+    Args:
+        np_arr (np.ndarray): The grayscale image
+        cmap (str): The name of the matplotlib colormap to use
+    Returns:
+        np.ndarray: The RGB image
+    """
+    rgba = np_rgba(np_arr, cmap)
+    return rgba[..., :3]
+
+
 @profile
 def run_vggt(
     scene_dir: str,
@@ -154,6 +191,7 @@ def run_vggt(
     fine_tracking: bool = True,
     conf_thres_value: float = 5.0,
     num_profiling_runs: int = 0,
+    sampling_mode: SAMPLING_MODE = "random",
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -317,11 +355,17 @@ def run_vggt(
 
         conf_mask = depth_conf >= conf_thres_value
         # at most writing 100000 3d points to colmap reconstruction object
-        conf_mask = randomly_limit_trues(conf_mask, max_points_for_colmap, depth_conf=None)
+        if sampling_mode == "random" or sampling_mode == "confidence":
+            conf_mask = randomly_limit_trues(
+                conf_mask, max_points_for_colmap, depth_conf=(depth_conf if sampling_mode == "confidence" else None)
+            )
+        elif sampling_mode == "voxels":
+            conf_mask = uniform_limit_trues(conf_mask, max_points_for_colmap, points_3d, depth_conf)
 
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]
         points_rgb = points_rgb[conf_mask]
+        points_conf_rgb = np_rgb(depth_conf[conf_mask])
 
         print("Converting to COLMAP format")
         reconstruction = batch_np_matrix_to_pycolmap_wo_track(
@@ -357,6 +401,7 @@ def run_vggt(
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))
+    trimesh.PointCloud(points_3d, colors=points_conf_rgb).export(os.path.join(scene_dir, "sparse/points_conf.ply"))
     saving_t2 = time.time()
 
     return VGGTProfiling(
