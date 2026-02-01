@@ -46,6 +46,11 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
         ("sfm", "{method}_outputs/{scene}_n*_s*/eval_results.json", _parse_sfm_json),
         (
             "gsplat",
+            os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step6999.json"),
+            _parse_gsplat_json,
+        ),
+        (
+            "gsplat",
             os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step29999.json"),
             _parse_gsplat_json,
         ),
@@ -73,7 +78,7 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
                     with open(file_path, "r") as f:
                         data = json.load(f)
 
-                    metrics = parser(data)
+                    metrics = parser(data, file_path)
 
                     # Construct record
                     record = {"method": method, "source": source_name, **params, **metrics}
@@ -90,7 +95,7 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
     # Merge rows that share the same unique identifiers (method, num_images, seed, etc.)
     # Since SfM and GS metrics come from different files but belong to the same run,
     # we group by identifiers and combine the columns.
-    group_cols = ["method", "num_images", "seed", "conf_thres_value"]
+    group_cols = ["method", "num_images", "seed", "conf_thres_value", "val_step"]
     # Filter only columns that exist to avoid key errors
     valid_group_cols = [c for c in group_cols if c in df.columns]
 
@@ -99,16 +104,20 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
     return df_merged
 
 
-def _parse_sfm_json(data: Dict) -> Dict[str, float]:
+def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float]:
     """Extracts RRE and RTE from SfM json."""
     if "metrics" in data and "mean_rre_deg" in data["metrics"]:
         return {"rre": data["metrics"]["mean_rre_deg"], "rte": data["metrics"]["mean_rte"]}
     return {}
 
 
-def _parse_gsplat_json(data: Dict[str, float]) -> Dict[str, float | None]:
+def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float | int | None]:
     """Extracts PSNR and LPIPS from gsplat json."""
-    return {"psnr": data.get("psnr"), "lpips": data.get("lpips")}
+    return {
+        "psnr": data.get("psnr"),
+        "lpips": data.get("lpips"),
+        "val_step": int(filename.split("val_step")[-1].split(".json")[0]),
+    }
 
 
 def parse_filters(filter_str: str) -> Dict[str, List[Any]]:
@@ -295,7 +304,7 @@ def main():
 
     colmap_df = df[df["method"] == "colmap"]
 
-    if args.x_axis != "num_images" and not colmap_df.empty:
+    if args.x_axis == "conf_thres_value" and not colmap_df.empty:
         grouped = colmap_df.groupby("plot_series")
 
         colmap_means_by_series = grouped.mean(numeric_only=True).to_dict(orient="index")
@@ -316,7 +325,7 @@ def main():
         hlines_dict = OrderedDict()
         hranges_dict = OrderedDict()
 
-        if args.x_axis != "num_images" and not colmap_df.empty:
+        if args.x_axis == "conf_thres_value" and not colmap_df.empty:
             plot_df = df[df["method"] != "colmap"]
 
             for series_name, metric_values in list(
@@ -346,9 +355,10 @@ def main():
             hranges=hranges_dict,
         )
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
-        axes[0].legend(handles=handles, labels=labels, title="Series", fontsize=10)
+    for i in range(4):
+        handles, labels = axes[i].get_legend_handles_labels()
+        if handles:
+            axes[i].legend(handles=handles, labels=labels, title="Series", fontsize=10)
 
     plt.tight_layout()
     out_file = f"full_evaluation {args.name} {args.x_axis} {args.split_param}.png"
