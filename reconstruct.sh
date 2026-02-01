@@ -25,6 +25,6 @@ for seed in "${seeds[@]}"; do
             --choice colmap \
             --num_images $num \
             --seed $seed
-        python -m check_sparse ./colmap_outputs/${dataset}_${factor}_n${num}_s${seed}_c5.0/sparse
+        python -m check_sparse ./colmap_outputs/${dataset}_${factor}_n${num}_s${seed}_c5.0/sparse/0
     done
 done
