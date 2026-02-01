@@ -15,5 +15,7 @@ for choice in "${choices[@]}"; do
         --pred-glob "$PRED_GLOB" \
         --gt "$GT_PATH"
 done
-python plot_metrics.py --name ${dataset}_${factor}
+
+./plot.sh $dataset $factor
+
 echo "--- Evaluation Complete ---"

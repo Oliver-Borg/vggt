@@ -30,7 +30,7 @@ class EvalReport(TypedDict):
 
 def umeyama_alignment(q: np.ndarray, p: np.ndarray, with_scale: bool = True) -> Tuple[float, np.ndarray, np.ndarray]:
     """
-    Computes optimal similarity transform: y = s * R * x + t.
+    Computes optimal similarity transform: p = s * R * q + t.
     https://en.wikipedia.org/wiki/Kabsch_algorithm
     """
     # Translation
@@ -153,7 +153,12 @@ def calculate_metrics(pred_poses: Dict[str, np.ndarray], gt_poses: Dict[str, np.
     }
 
 
-def main(pred: str, gt: str) -> None:
+def main(pred: str, gt: str, force: bool = False) -> None:
+    out_file = os.path.join(pred, "eval_results.json")
+    if os.path.exists(out_file) and not force:
+        print(f"Evaluation for {pred} already exists at {out_file}. Skipping.")
+        return
+
     gt_poses = get_poses(gt)
     pred_poses = get_poses(pred)
 
@@ -176,8 +181,6 @@ def main(pred: str, gt: str) -> None:
         "metrics": metrics,
         "profiling": profiling,
     }
-
-    out_file = os.path.join(pred, "eval_results.json")
     with open(out_file, "w") as f:
         json.dump(report, f, indent=4)
 
@@ -188,7 +191,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate SfM reconstruction vs GT.")
     parser.add_argument("--pred-glob", required=True, type=str)
     parser.add_argument("--gt", required=True, type=str)
+    parser.add_argument("--force", type=bool, default=False, help="Force re-evaluation")
     args = parser.parse_args()
 
     for pred in sorted(glob.glob(args.pred_glob)):
-        main(pred, args.gt)
+        main(pred, args.gt, force=args.force)
