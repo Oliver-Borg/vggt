@@ -6,7 +6,8 @@ import os
 import numpy as np
 import pycolmap
 from scipy.spatial.transform import Rotation as R
-from typing import Dict, Tuple, List, Optional, Any, TypedDict
+from typing import Dict, Tuple, List, Optional, Any, TypedDict, Union
+import struct
 
 
 class EvalMetrics(TypedDict, total=False):
@@ -109,6 +110,124 @@ def get_poses(path: str) -> Dict[str, np.ndarray]:
         poses[image.name] = c2w
 
     return poses
+
+
+def get_point_cloud(path: str) -> Optional[np.ndarray]:
+    """
+    Reads the point cloud from a COLMAP model in a path.
+    Checks for subfolders like 0, 1, 2 if they exist.
+    """
+    potential_paths: List[str] = [path]
+    sparse_path = os.path.join(path, "sparse")
+
+    if os.path.isdir(sparse_path):
+        potential_paths.append(sparse_path)
+        subdirs = [
+            os.path.join(sparse_path, d)
+            for d in os.listdir(sparse_path)
+            if d.isdigit() and os.path.isdir(os.path.join(sparse_path, d))
+        ]
+        potential_paths.extend(subdirs)
+
+    for p in potential_paths:
+        if os.path.exists(os.path.join(p, "points3D.bin")):
+            try:
+                reconst = pycolmap.Reconstruction(p)
+                points = []
+                for _, point in reconst.points3D.items():
+                    points.append(point.xyz)
+                return np.array(points)
+            except Exception:
+                continue
+
+    return None
+
+
+def get_intrinsics(path: str, camera_id: int = 1) -> dict:
+    """
+    Parses COLMAP cameras.txt or cameras.bin.
+    Fixes the header size to 32 bytes for binary format.
+    """
+    sparse_path = os.path.join(path, "sparse")
+    cameras_txt = os.path.join(sparse_path, "cameras.txt")
+    cameras_bin = os.path.join(sparse_path, "cameras.bin")
+
+    import os
+
+
+import struct
+
+
+def get_intrinsics(path: str, camera_id: int = 1) -> dict:
+    """
+    Parses COLMAP cameras.txt or cameras.bin.
+    Fixes the header size to 32 bytes for binary format.
+    """
+    sparse_path = os.path.join(path, "sparse")
+    cameras_txt = os.path.join(sparse_path, "cameras.txt")
+    cameras_bin = os.path.join(sparse_path, "cameras.bin")
+
+    if os.path.exists(cameras_bin):
+        with open(cameras_bin, "rb") as f:
+            num_cameras = struct.unpack("<Q", f.read(8))[0]
+            for _ in range(num_cameras):
+                # Header: id(i=4), model(i=4), width(Q=8), height(Q=8) = 24 bytes
+                header_data = f.read(24)
+                if len(header_data) < 24:
+                    break
+
+                cam_id, model_id, width, height = struct.unpack("<iiQQ", header_data)
+
+                # COLMAP Model IDs: 0:SIMPLE_PINHOLE(3), 1:PINHOLE(4), 2:SIMPLE_RADIAL(3), 3:RADIAL(4), 4:OPENCV(8)
+                num_params_map = {0: 3, 1: 4, 2: 3, 3: 4, 4: 8, 5: 8}
+                num_params = num_params_map.get(model_id, 0)
+
+                params_data = f.read(8 * num_params)
+                if len(params_data) < 8 * num_params:
+                    break
+                params = struct.unpack("<" + "d" * num_params, params_data)
+
+                if cam_id == camera_id:
+                    return format_colmap_params(model_id, params)
+
+    elif os.path.exists(cameras_txt):
+        with open(cameras_txt, "r") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                elems = line.split()
+                if int(elems[0]) == camera_id:
+                    model_name = elems[1]
+                    params = [float(x) for x in elems[4:]]
+                    return format_colmap_params(model_name, params)
+
+    return None
+
+
+def format_colmap_params(model: Union[int, str], params: list) -> dict:
+    """Maps flat COLMAP params to a structured dictionary."""
+    # SIMPLE_PINHOLE: f, cx, cy
+    if model in [0, "SIMPLE_PINHOLE"]:
+        return {"fx": params[0], "fy": params[0], "cx": params[1], "cy": params[2], "k1": 0}
+    # PINHOLE: fx, fy, cx, cy
+    elif model in [1, "PINHOLE"]:
+        return {"fx": params[0], "fy": params[1], "cx": params[2], "cy": params[3], "k1": 0}
+    # SIMPLE_RADIAL: f, cx, cy, k1
+    elif model in [2, "SIMPLE_RADIAL"]:
+        return {"fx": params[0], "fy": params[0], "cx": params[1], "cy": params[2], "k1": params[3]}
+    # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+    elif model in [4, "OPENCV"]:
+        return {
+            "fx": params[0],
+            "fy": params[1],
+            "cx": params[2],
+            "cy": params[3],
+            "k1": params[4],
+            "k2": params[5],
+            "p1": params[6],
+            "p2": params[7],
+        }
+    return {"fx": 0, "fy": 0, "cx": 0, "cy": 0, "k1": 0}
 
 
 def calculate_metrics(pred_poses: Dict[str, np.ndarray], gt_poses: Dict[str, np.ndarray]) -> EvalMetrics:
