@@ -47,7 +47,8 @@ def project_points(points_3d, c2w, intrinsics):
     x = (pts_cam[:, 0] * fx / pts_cam[:, 2]) + cx
     y = (pts_cam[:, 1] * fy / pts_cam[:, 2]) + cy
 
-    return np.stack([x, y], axis=1), pts_cam[:, 2] > 0  # Return coords and front-facing mask
+    # Return coords and depth values (instead of just mask)
+    return np.stack([x, y], axis=1), pts_cam[:, 2]
 
 
 # def project_points(points_3d, c2w, intrinsics):
@@ -188,7 +189,17 @@ def run_gradio_eval_with_names(pred_path, gt_path, show_gt_pts, show_pred_pts, p
     pred_poses = get_poses(pred_path)
     common_names = sorted(list(set(pred_poses.keys()) & set(gt_poses.keys())))
 
-    return summary, fig, metrics, gr.update(choices=common_names, value=common_names[0] if common_names else None)
+    if common_names:
+        return (
+            summary,
+            fig,
+            metrics,
+            gr.update(choices=common_names, value=common_names[0]),
+            gr.update(maximum=len(common_names) - 1, value=0, visible=True),  # Enable slider
+            common_names,
+        )
+    else:
+        return summary, fig, metrics, gr.update(), gr.update(), []
 
 
 def update_projection(camera_name, pred_path, gt_path):
@@ -209,23 +220,55 @@ def update_projection(camera_name, pred_path, gt_path):
     intrinsics = get_intrinsics(pred_path, camera_id=1)
     img_path = os.path.join(pred_path, "images", camera_name)
 
-    img = cv2.imread(img_path)
-    if img is None:
+    # Read image to get dimensions
+    img_ref = cv2.imread(img_path)
+    if img_ref is None:
         return None, f"Image {camera_name} not found."
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    pts_2d, mask = project_points(pred_pts_aligned, gt_poses[camera_name], intrinsics)
-    h, w = img.shape[:2]
-    valid = mask & (pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < w) & (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < h)
+    h, w = img_ref.shape[:2]
 
-    for pt in pts_2d[valid][::20]:
-        cv2.circle(img, (int(pt[0]), int(pt[1])), 2, (0, 255, 0), -1)
+    # Project points and get depths
+    pts_2d, depths = project_points(pred_pts_aligned, gt_poses[camera_name], intrinsics)
 
-    return img, f"Visualizing: {camera_name} (Scale: {s:.2f})"
+    # Filter valid points (in front of camera and inside image)
+    valid = (depths > 0) & (pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < w) & (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < h)
+
+    pts_valid = pts_2d[valid]
+    depths_valid = depths[valid]
+    sort_idx = np.argsort(depths_valid)[::-1]
+    pts_valid = pts_valid[sort_idx]
+    depths_valid = depths_valid[sort_idx]
+
+    # Normalize depth for colormap
+    if len(depths_valid) > 0:
+        d_min, d_max = depths_valid.min(), depths_valid.max()
+        norm_depth = (depths_valid - d_min) / (d_max - d_min + 1e-8)
+        norm_depth = (norm_depth * 255).astype(np.uint8)
+
+        cmap = getattr(cv2, "COLORMAP_TURBO", cv2.COLORMAP_JET)
+        colors = cv2.applyColorMap(norm_depth[:, None], cmap)  # Shape (N, 1, 3)
+    else:
+        colors = []
+
+    img_viz =cv2.cvtColor(img_ref, cv2.COLOR_BGR2RGB)
+
+    stride = 10
+    for pt, color in zip(pts_valid[::stride], colors[::stride]):
+        cv2.circle(img_viz, (int(pt[0]), int(pt[1])), 2, color[0].tolist(), -1)
+
+    return img_viz, f"Visualizing Depth: {camera_name} (Scale: {s:.2f})"
+
+
+def sync_slider_to_dropdown(idx, names):
+    """Updates the dropdown selection based on slider index."""
+    if names and 0 <= int(idx) < len(names):
+        return names[int(idx)]
+    return None
 
 
 with gr.Blocks(title="SfM Evaluation Suite") as demo:
     gr.Markdown("# 3D Reconstruction Evaluator")
+    camera_names_state = gr.State([])
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -244,29 +287,33 @@ with gr.Blocks(title="SfM Evaluation Suite") as demo:
                 chk_gt = gr.Checkbox(label="Show GT Cloud", value=True)
                 chk_pred = gr.Checkbox(label="Show Pred Cloud", value=True)
 
-            # New Control for Color Mode
             radio_color = gr.Radio(
                 choices=["RGB", "Confidence"], label="Pred Point Color", value="RGB", interactive=True
             )
 
             btn = gr.Button("Evaluate & Visualize", variant="primary")
+
+            camera_slider = gr.Slider(label="Scroll Cameras", minimum=0, maximum=1, step=1, visible=False)
             camera_dropdown = gr.Dropdown(label="Select Camera to Project", choices=[], allow_custom_value=True)
+
             output_metrics = gr.Markdown("Results will appear here...")
             output_json = gr.JSON(label="Full Metrics JSON")
-            output_img = gr.Image(label="Projection Overlay (Click Camera to View)")
+            output_img = gr.Image(label="Depth Projection")
             img_info = gr.Markdown("")
 
         with gr.Column(scale=2):
             plot_output = gr.Plot(label="3D Trajectory Comparison")
 
-    # Update the evaluate button to also populate the dropdown
     btn.click(
         fn=run_gradio_eval_with_names,
         inputs=[pred_input, gt_input, chk_gt, chk_pred, radio_color],
-        outputs=[output_metrics, plot_output, output_json, camera_dropdown],
+        outputs=[output_metrics, plot_output, output_json, camera_dropdown, camera_slider, camera_names_state],
     )
 
-    # Trigger projection when dropdown changes
+    camera_slider.change(
+        fn=sync_slider_to_dropdown, inputs=[camera_slider, camera_names_state], outputs=[camera_dropdown]
+    )
+
     camera_dropdown.change(
         fn=update_projection, inputs=[camera_dropdown, pred_input, gt_input], outputs=[output_img, img_info]
     )
