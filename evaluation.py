@@ -164,6 +164,10 @@ def get_intrinsics(path: str, camera_id: int = 1) -> dict:
     Fixes the header size to 32 bytes for binary format.
     """
     sparse_path = os.path.join(path, "sparse")
+
+    if os.path.exists(os.path.join(sparse_path, "0")):
+        sparse_path = os.path.join(sparse_path, "0")
+
     cameras_txt = os.path.join(sparse_path, "cameras.txt")
     cameras_bin = os.path.join(sparse_path, "cameras.bin")
 
@@ -178,8 +182,8 @@ def get_intrinsics(path: str, camera_id: int = 1) -> dict:
 
                 cam_id, model_id, width, height = struct.unpack("<iiQQ", header_data)
 
-                # COLMAP Model IDs: 0:SIMPLE_PINHOLE(3), 1:PINHOLE(4), 2:SIMPLE_RADIAL(3), 3:RADIAL(4), 4:OPENCV(8)
-                num_params_map = {0: 3, 1: 4, 2: 3, 3: 4, 4: 8, 5: 8}
+                # COLMAP Model IDs: 0:SIMPLE_PINHOLE(3), 1:PINHOLE(4), 2:SIMPLE_RADIAL(4), 3:RADIAL(5), 4:OPENCV(8)
+                num_params_map = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8}
                 num_params = num_params_map.get(model_id, 0)
 
                 params_data = f.read(8 * num_params)
