@@ -202,39 +202,36 @@ def run_gradio_eval_with_names(pred_path, gt_path, show_gt_pts, show_pred_pts, p
         return summary, fig, metrics, gr.update(), gr.update(), []
 
 
-def update_projection(camera_name, pred_path, gt_path):
-    """Function to update the image when a camera is chosen from the dropdown."""
-    if not camera_name:
-        return None, "Select a camera."
+def find_image_file(base_path: str, image_name: str) -> Optional[str]:
+    """Helper to find the image file traversing common COLMAP directory structures."""
+    possible_roots = [
+        base_path,
+        os.path.join(base_path, "images"),
+        os.path.join(base_path, "..", "images"),
+        os.path.join(base_path, "..", "..", "images"),
+    ]
+    for root in possible_roots:
+        if os.path.exists(root):
+            cand = os.path.join(root, image_name)
+            if os.path.exists(cand):
+                return cand
+    return None
 
-    gt_poses = get_poses(gt_path)
-    pred_poses = get_poses(pred_path)
-    common_names = sorted(list(set(pred_poses.keys()) & set(gt_poses.keys())))
-    p_centers = np.array([pred_poses[n][:3, 3] for n in common_names])
-    g_centers = np.array([gt_poses[n][:3, 3] for n in common_names])
-    s, R, t = umeyama_alignment(p_centers, g_centers)
 
-    pred_pts = get_point_cloud(pred_path)
-    pred_pts_aligned = (s * (R @ pred_pts.T)).T + t.T
-
-    intrinsics = get_intrinsics(pred_path, camera_id=1)
-    img_path = os.path.join(pred_path, "images", camera_name)
-
-    # Read image to get dimensions
-    img_ref = cv2.imread(img_path)
-    if img_ref is None:
-        return None, f"Image {camera_name} not found."
-
+def render_depth_overlay(img_ref, points_3d, pose, intrinsics):
+    """Projects 3D points onto image and draws them with depth coloring."""
     h, w = img_ref.shape[:2]
 
     # Project points and get depths
-    pts_2d, depths = project_points(pred_pts_aligned, gt_poses[camera_name], intrinsics)
+    pts_2d, depths = project_points(points_3d, pose, intrinsics)
 
     # Filter valid points (in front of camera and inside image)
     valid = (depths > 0) & (pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < w) & (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < h)
 
     pts_valid = pts_2d[valid]
     depths_valid = depths[valid]
+
+    # Sort by depth (farthest first) so closer points overwrite
     sort_idx = np.argsort(depths_valid)[::-1]
     pts_valid = pts_valid[sort_idx]
     depths_valid = depths_valid[sort_idx]
@@ -250,13 +247,67 @@ def update_projection(camera_name, pred_path, gt_path):
     else:
         colors = []
 
-    img_viz =cv2.cvtColor(img_ref, cv2.COLOR_BGR2RGB)
+    img_viz = img_ref.copy()
 
-    stride = 10
+    stride = 5
     for pt, color in zip(pts_valid[::stride], colors[::stride]):
         cv2.circle(img_viz, (int(pt[0]), int(pt[1])), 2, color[0].tolist(), -1)
 
-    return img_viz, f"Visualizing Depth: {camera_name} (Scale: {s:.2f})"
+    return img_viz
+
+
+def update_projection_comparison(camera_name, pred_path, gt_path):
+    """Function to update both GT and Pred projection images."""
+    if not camera_name:
+        return None, None, "Select a camera."
+
+    # 1. Setup Alignment
+    gt_poses = get_poses(gt_path)
+    pred_poses = get_poses(pred_path)
+    common_names = sorted(list(set(pred_poses.keys()) & set(gt_poses.keys())))
+
+    if camera_name not in common_names:
+        return None, None, f"Camera {camera_name} not found in common set."
+
+    p_centers = np.array([pred_poses[n][:3, 3] for n in common_names])
+    g_centers = np.array([gt_poses[n][:3, 3] for n in common_names])
+    s, R, t = umeyama_alignment(p_centers, g_centers)
+
+    # 2. Load Image (Try to find it in GT path structure)
+    img_path = find_image_file(gt_path, camera_name)
+    if not img_path:
+        # Fallback to pred path
+        img_path = find_image_file(pred_path, camera_name)
+
+    if not img_path or not os.path.exists(img_path):
+        return None, None, f"Image {camera_name} not found on disk."
+
+    img_ref = cv2.imread(img_path)
+    img_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2RGB)
+
+    # 3. Get Intrinsics (We use GT intrinsics for both to compare against the same image)
+    gt_intrinsics = get_intrinsics(gt_path, camera_id=1)
+    pred_intrinsics = get_intrinsics(pred_path, camera_id=1)
+    # Note: If camera_id varies per image, this needs to be dynamic based on cameras.txt
+
+    # 4. Generate GT Projection
+    gt_pts = get_point_cloud(gt_path)
+    if gt_pts is not None:
+        gt_viz = render_depth_overlay(img_ref, gt_pts, gt_poses[camera_name], gt_intrinsics)
+    else:
+        gt_viz = img_ref  # Return clean image if no points
+
+    # 5. Generate Pred Projection (Aligned)
+    pred_pts = get_point_cloud(pred_path)
+    if pred_pts is not None:
+        # Align Pred Points to GT World
+        pred_pts_aligned = (s * (R @ pred_pts.T)).T + t.T
+        # Project using GT Pose (to see if geometry matches the real image view)
+        pred_viz = render_depth_overlay(img_ref, pred_pts_aligned, gt_poses[camera_name], pred_intrinsics)
+    else:
+        pred_viz = img_ref
+
+    return gt_viz, pred_viz, f"Visualizing: {camera_name} (Scale: {s:.2f})"
 
 
 def sync_slider_to_dropdown(idx, names):
@@ -298,11 +349,15 @@ with gr.Blocks(title="SfM Evaluation Suite") as demo:
 
             output_metrics = gr.Markdown("Results will appear here...")
             output_json = gr.JSON(label="Full Metrics JSON")
-            output_img = gr.Image(label="Depth Projection")
             img_info = gr.Markdown("")
 
         with gr.Column(scale=2):
             plot_output = gr.Plot(label="3D Trajectory Comparison")
+            with gr.Row():
+                with gr.Column():
+                    gt_img_display = gr.Image(label="GT Projection")
+                with gr.Column():
+                    pred_img_display = gr.Image(label="Pred Projection")
 
     btn.click(
         fn=run_gradio_eval_with_names,
@@ -315,7 +370,9 @@ with gr.Blocks(title="SfM Evaluation Suite") as demo:
     )
 
     camera_dropdown.change(
-        fn=update_projection, inputs=[camera_dropdown, pred_input, gt_input], outputs=[output_img, img_info]
+        fn=update_projection_comparison,
+        inputs=[camera_dropdown, pred_input, gt_input],
+        outputs=[gt_img_display, pred_img_display, img_info],
     )
 
 if __name__ == "__main__":

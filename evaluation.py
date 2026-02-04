@@ -149,21 +149,6 @@ def get_intrinsics(path: str, camera_id: int = 1) -> dict:
     Fixes the header size to 32 bytes for binary format.
     """
     sparse_path = os.path.join(path, "sparse")
-    cameras_txt = os.path.join(sparse_path, "cameras.txt")
-    cameras_bin = os.path.join(sparse_path, "cameras.bin")
-
-    import os
-
-
-import struct
-
-
-def get_intrinsics(path: str, camera_id: int = 1) -> dict:
-    """
-    Parses COLMAP cameras.txt or cameras.bin.
-    Fixes the header size to 32 bytes for binary format.
-    """
-    sparse_path = os.path.join(path, "sparse")
 
     if os.path.exists(os.path.join(sparse_path, "0")):
         sparse_path = os.path.join(sparse_path, "0")
