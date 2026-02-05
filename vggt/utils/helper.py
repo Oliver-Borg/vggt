@@ -70,13 +70,15 @@ def uniform_limit_trues(
     iters = 0
     best_grid_size = grid_size
     closest_count: int | None = None
+    min_grid_occupancy = 20
 
     # Ideally we will have a value of grid_size that gives us ~100000 occupied voxels
     while iters < 10 and lower_grid_size < upper_grid_size:
         disc_points = (norm_points * grid_size).round().astype(np.uint32)
-        flat_inds = disc_points[:, 0] * grid_size ** 2 + disc_points[:, 1] * grid_size + disc_points[:, 2]
-        unique_flat_inds: np.ndarray = np.unique(flat_inds)
-        cur_size = unique_flat_inds.size
+        flat_voxel_inds = disc_points[:, 0] * grid_size ** 2 + disc_points[:, 1] * grid_size + disc_points[:, 2]
+        unique_flat_voxel_inds, counts = np.unique(flat_voxel_inds, return_counts=True)
+        # cur_size = np.count_nonzero(counts >= min_grid_occupancy)  # Only keep voxels that have >= min_grid_occupancy points
+        cur_size = unique_flat_voxel_inds.size
         if cur_size == max_trues:
             best_grid_size = grid_size
             closest_count = cur_size
@@ -95,67 +97,22 @@ def uniform_limit_trues(
     
     grid_size = best_grid_size
     disc_points = (norm_points * grid_size).round().astype(np.uint32)
-    flat_inds = disc_points[:, 0] * grid_size ** 2 + disc_points[:, 1] * grid_size + disc_points[:, 2]
-    unique_flat_inds: np.ndarray = np.unique(flat_inds)
+    flat_voxel_inds = disc_points[:, 0] * grid_size ** 2 + disc_points[:, 1] * grid_size + disc_points[:, 2]
+    unique_flat_voxel_inds: np.ndarray = np.unique(flat_voxel_inds)
 
     # We can then sample the highest confidence point within each
 
-    flat_confs = depth_conf.flatten()
-    # conf_sorter = flat_confs.argsort(order="desc")
-    # sorted_confs = flat_confs[conf_sorter]
-    # sorted_flat_inds = flat_inds[conf_sorter]
-    # build new flat mask: True only at sampled positions
+    flat_confs = depth_conf[mask].flatten()
     limited_flat_mask = np.zeros(mask.size, dtype=bool)
-
-    # for flat_ind in unique_flat_inds:
-    #     indices = np.where(flat_inds == flat_ind)[0]
-    #     confs = flat_confs[indices]
-    #     highest_conf = np.argmax(confs)
-    #     best_ind = indices[highest_conf]
-    #     limited_flat_mask[mask.flatten()][best_ind] = True
-
-    inds_sorter = np.argsort(flat_inds)
-
-    flat_inds_sorted = flat_inds[inds_sorter]
-    flat_confs_sorted = flat_confs[inds_sorter]
-    orig_inds_sorted = np.arange(flat_inds.size)[inds_sorter]
-    best_conf = np.zeros_like(flat_confs_sorted)
-    best_conf_ind = np.zeros_like(orig_inds_sorted)
-
-    best_conf[0] = flat_confs_sorted[0]
-    best_conf_ind[0] = orig_inds_sorted[0]
-
-    for i in range(1, best_conf.size):
-        conf = flat_confs_sorted[i]
-        prev_conf = flat_confs_sorted[i - 1]
-        ind = orig_inds_sorted[i]
-        prev_ind = orig_inds_sorted[i - 1]
-        voxel_ind = flat_inds_sorted[i]
-        prev_voxel_ind = flat_inds_sorted[i - 1]
-
-        if voxel_ind != prev_voxel_ind:
-            best_conf[i] = conf
-            best_conf_ind[i] = ind
-        elif conf > prev_conf:
-            best_conf[i] = conf
-            best_conf_ind[i] = ind
-        else:
-            best_conf[i] = prev_conf
-            best_conf_ind[i] = prev_ind
-
-    for i in range(best_conf.size - 2, -1, -1):
-        ind = best_conf_ind[i]
-        prev_ind = best_conf_ind[i + 1]
-        voxel_ind = flat_inds_sorted[i]
-        prev_voxel_ind = flat_inds_sorted[i + 1]
-        if voxel_ind != prev_voxel_ind:
-            # best_conf_ind[i] = ind
-            continue
-        else:
-            best_conf_ind[i] = prev_ind
+    inds_sorter = np.lexsort((flat_confs, flat_voxel_inds))
+    flat_inds_sorted = flat_voxel_inds[inds_sorter]
+    last_indices = np.where(
+        (flat_inds_sorted[:-1] != flat_inds_sorted[1:])
+        & (flat_inds_sorted[:-1] == np.roll(flat_inds_sorted, shift=(min_grid_occupancy,))[:-1])
+    )[0]
 
     set_mask = np.zeros_like(limited_flat_mask)
-    set_mask[np.unique(best_conf_ind)] = True
+    set_mask[last_indices] = True
     sorted_mask = np.zeros_like(limited_flat_mask)
     sorted_mask[inds_sorter] = set_mask
 
