@@ -176,6 +176,17 @@ def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
     rgba = np_rgba(np_arr, cmap)
     return rgba[..., :3]
 
+def save_depths(path: str, depths: np.ndarray, depth_confs: np.ndarray, camera_names: list[str]):
+    # Save the raw depth and confidence maps for visualization
+    b = depths.shape[0]
+    os.makedirs(os.path.join(path, "depths"), exist_ok=True)
+    for i in range(b):
+        depth = depths[i, ..., 0]
+        depth_conf = depth_confs[i, ..., 0]
+        camera_name = camera_names[i]
+        np.save(os.path.join(path, "depths", f"depth_{camera_name}.npy"), depth)
+        np.save(os.path.join(path, "depths", f"depth_conf_{camera_name}.npy"), depth_conf)
+
 
 @profile
 def run_vggt(
@@ -365,7 +376,7 @@ def run_vggt(
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]
         points_rgb = points_rgb[conf_mask]
-        points_conf_rgb = np_rgb(depth_conf[conf_mask])
+        points_conf_rgb = np_rgb(depth_conf[conf_mask] ** 2 * depth_map[conf_mask].flatten())
 
         print("Converting to COLMAP format")
         reconstruction = batch_np_matrix_to_pycolmap_wo_track(
@@ -398,6 +409,7 @@ def run_vggt(
     sparse_reconstruction_dir = os.path.join(scene_dir, "sparse")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
+    save_depths(scene_dir, depth_map, depth_conf, base_image_path_list)
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))
