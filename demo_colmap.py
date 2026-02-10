@@ -181,8 +181,8 @@ def save_depths(path: str, depths: np.ndarray, depth_confs: np.ndarray, camera_n
     b = depths.shape[0]
     os.makedirs(os.path.join(path, "depths"), exist_ok=True)
     for i in range(b):
-        depth = depths[i, ..., 0]
-        depth_conf = depth_confs[i, ..., 0]
+        depth = depths[i]
+        depth_conf = depth_confs[i]
         camera_name = camera_names[i]
         np.save(os.path.join(path, "depths", f"depth_{camera_name}.npy"), depth)
         np.save(os.path.join(path, "depths", f"depth_conf_{camera_name}.npy"), depth_conf)
@@ -263,7 +263,7 @@ def run_vggt(
     vggt_fixed_resolution = 518
     img_load_resolution = 1024
 
-    images, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
+    images, masks, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
     images = images.to(device)
     original_coords = original_coords.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
@@ -275,6 +275,11 @@ def run_vggt(
     # Warmup run
     warmup_t1 = time.time()
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+    masks = F.interpolate(masks.to(torch.uint8), size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="nearest")
+    
+    masks = masks.cpu().numpy().transpose(0, 2, 3, 1)
+    depth_conf[masks[..., 0] == 0] = 0.0
+    depth_map[masks == 0] = np.nan
     warmup_t2 = time.time()
     warmup_vram_mb = get_gpu_stats()
 
@@ -291,6 +296,10 @@ def run_vggt(
     processing_t1 = time.time()
 
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+    points_3d[masks[..., 0] == 0] = np.nan
+
+    with torch.no_grad():
+        torch.cuda.empty_cache()
 
     if use_ba:
         image_size = np.array(images.shape[-2:])
@@ -362,9 +371,13 @@ def run_vggt(
         # (S, H, W, 3), with x, y coordinates and frame indices
         points_xyf = create_pixel_coordinate_grid(num_frames, height, width)
 
-        print(f"Confidence\tmin: {depth_conf.min():.1f}\tmax: {depth_conf.max():.1f}\tmean: {depth_conf.mean():.1f}")
+        print(f"Confidence\tmin: {depth_conf.min():.1f}\tmax: {depth_conf.max():.1f}\tmean: {depth_conf.mean():.1f}. Normalizing...")
+
+        depth_conf = (depth_conf - depth_conf.min()) / (depth_conf.max() - depth_conf.min())
 
         conf_mask = depth_conf >= conf_thres_value
+
+        assert ((masks[..., 0] == 0) & conf_mask).sum() == 0
         # at most writing 100000 3d points to colmap reconstruction object
         if sampling_mode == "random" or sampling_mode == "confidence":
             conf_mask = randomly_limit_trues(
@@ -409,7 +422,7 @@ def run_vggt(
     sparse_reconstruction_dir = os.path.join(scene_dir, "sparse")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
-    save_depths(scene_dir, depth_map, depth_conf, base_image_path_list)
+    save_depths(scene_dir, depth_map[..., 0], depth_conf, base_image_path_list)
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))

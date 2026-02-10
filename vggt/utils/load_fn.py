@@ -33,6 +33,7 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
         raise ValueError("At least 1 image is required")
 
     images = []
+    masks = []
     original_coords = []  # Renamed from position_info to be more descriptive
     to_tensor = TF.ToTensor()
 
@@ -40,16 +41,20 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
         # Open image
         img = Image.open(image_path)
 
+        # Get original dimensions
+        width, height = img.size
+
         # If there's an alpha channel, blend onto white background
         if img.mode == "RGBA":
             background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            alpha_channel = img.split()[3]
+            mask = alpha_channel
             img = Image.alpha_composite(background, img)
+        else:
+            mask = Image.new("L", img.size, 1)
 
         # Convert to RGB
         img = img.convert("RGB")
-
-        # Get original dimensions
-        width, height = img.size
 
         # Make the image square by padding the shorter dimension
         max_dim = max(width, height)
@@ -74,15 +79,21 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
         square_img = Image.new("RGB", (max_dim, max_dim), (0, 0, 0))
         square_img.paste(img, (left, top))
 
+        mask_bg = Image.new("L", (max_dim, max_dim), 0)
+        mask_bg.paste(mask, (left, top))
+
         # Resize to target size
         square_img = square_img.resize((target_size, target_size), Image.Resampling.BICUBIC)
+        mask_bg = mask_bg.resize((target_size, target_size), Image.Resampling.NEAREST)
 
         # Convert to tensor
         img_tensor = to_tensor(square_img)
         images.append(img_tensor)
+        masks.append(to_tensor(mask_bg) > 0)
 
     # Stack all images
     images = torch.stack(images)
+    masks = torch.stack(masks)
     original_coords = torch.from_numpy(np.array(original_coords)).float()
 
     # Add additional dimension if single image to ensure correct shape
@@ -91,7 +102,7 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
             images = images.unsqueeze(0)
             original_coords = original_coords.unsqueeze(0)
 
-    return images, original_coords
+    return images, masks, original_coords
 
 
 def load_and_preprocess_images(image_path_list, mode="crop"):
