@@ -3,50 +3,15 @@ import pycolmap
 import numpy as np
 import json
 from pathlib import Path
-from typing import Tuple, Optional
 import cv2
 import os
-from scipy.spatial.transform import Rotation as Rot
 
-
-def umeyama_alignment(q: np.ndarray, p: np.ndarray, with_scale: bool = True) -> Tuple[float, np.ndarray, np.ndarray]:
-    """
-    Computes optimal similarity transform: p = s * R * q + t.
-    https://en.wikipedia.org/wiki/Kabsch_algorithm
-    """
-    # Translation
-    n, m = q.shape
-    q_mean = q.mean(axis=0)
-    p_mean = p.mean(axis=0)
-    q_centered = q - q_mean
-    p_centered = p - p_mean
-    # Computation of the covariance matrix
-
-    H = np.dot(p_centered.T, q_centered) / n
-    # First, calculate the SVD of the covariance matrix H,
-    U, Sigma, Vt = np.linalg.svd(H)
-
-    # Next, record if the orthogonal matrices contain a reflection,
-    S = np.eye(m)
-    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
-        S[m - 1, m - 1] = -1
-
-    # Finally, calculate our optimal rotation matrix R as
-    rotation = np.dot(np.dot(U, S), Vt)
-
-    if with_scale:
-        var_x = np.var(q_centered, axis=0).sum()
-        scale = np.trace(np.dot(np.diag(Sigma), S)) / var_x
-    else:
-        scale = 1.0
-
-    translation = p_mean - scale * np.dot(rotation, q_mean)
-    return float(scale), rotation, translation
+from cam_utils import cfw_to_c2w, mat_to_quat, umeyama_alignment
 
 
 def get_common_names(rec_cam: pycolmap.Reconstruction, rec_pts: pycolmap.Reconstruction):
-    names_cam = {img.name: img.cam_from_world.translation for img in rec_cam.images.values()}
-    names_pts = {img.name: img.cam_from_world.translation for img in rec_pts.images.values()}
+    names_cam = {img.name: cfw_to_c2w(img.cam_from_world)[0] for img in rec_cam.images.values()}
+    names_pts = {img.name: cfw_to_c2w(img.cam_from_world)[0] for img in rec_pts.images.values()}
 
     common_names = set(names_cam.keys()) & set(names_pts.keys())
     return common_names, names_cam, names_pts
@@ -97,6 +62,7 @@ def load_json_data(path: Path) -> pycolmap.Reconstruction:
         name = Path(fname).name
 
         c2w = np.array(frame["transform_matrix"])
+        # TODO Check if this is necessary
         # c2w[0:3, 1:3] *= -1
 
         if frame_intrinsics:
@@ -129,7 +95,7 @@ def load_json_data(path: Path) -> pycolmap.Reconstruction:
 
         translation = c2w[:3, 3]
         rotation_matrix = c2w[:3, :3]
-        rotation_quat = Rot.from_matrix(rotation_matrix).as_quat()
+        rotation_quat = mat_to_quat(rotation_matrix)
 
         images[name].cam_from_world.rotation = pycolmap.Rotation3d(rotation_quat)
         images[name].cam_from_world.translation = translation
@@ -144,45 +110,20 @@ def load_json_data(path: Path) -> pycolmap.Reconstruction:
     return recon
 
 
-def save_cameras_json(
-    reconstruction, output_path: Path, alignment: Optional[Tuple] = None, common_names: set[str] | None = None
-):
+def save_cameras_json(reconstruction, output_path: Path, common_names: set[str] | None = None):
     """
     Exports camera intrinsics and extrinsics to a JSON file.
     If 'alignment' (s, R, t) is provided, the poses are transformed before saving.
     """
     out_data = {}
 
-    # Unpack alignment if provided
-    s, R_align, t_align = (1.0, np.eye(3), np.zeros(3)) if alignment is None else alignment
-
     for img_id, img in reconstruction.images.items():
         cam = reconstruction.cameras[img.camera_id]
         if common_names is not None and img.name not in common_names:
             continue
 
-        # 1. Get current Pose (World-to-Camera)
-        cam_from_world = img.cam_from_world
-        R_w2c = cam_from_world.rotation.matrix()
-        tvec = cam_from_world.translation
-
-        # 2. Convert to Camera Center (Camera-to-World) for easier transformation
-        # C = -R^T * t
-        center = -R_w2c.T @ tvec
-
-        # 3. Apply Sim(3) Transform to Center: C_new = s * R * C + t
-        center_new = s * (R_align @ center) + t_align
-
-        # 4. Apply Rotation Transform to Orientation
-        # The camera orientation relative to the world rotates by R_align
-        # R_w2c_new = R_w2c_old * R_align^T
-        R_w2c_new = R_w2c @ R_align.T
-
-        # 5. Recompute Translation: t_new = -R_w2c_new * C_new
-        tvec_new = -R_w2c_new @ center_new
-
-        # 6. Convert Rotation back to Quaternion
-        qvec_new = pycolmap.Rotation3d(R_w2c_new).quat
+        translation, rotation_matrix = cfw_to_c2w(img.cam_from_world)
+        rot_quat = mat_to_quat(rotation_matrix)
 
         out_data[img.name] = {
             "camera_id": img.camera_id,
@@ -191,7 +132,7 @@ def save_cameras_json(
             "height": cam.height,
             "params": cam.params.tolist(),
             "params_info": cam.params_info,
-            "extrinsics": {"qvec": qvec_new.tolist(), "tvec": tvec_new.tolist(), "center": center_new.tolist()},
+            "extrinsics": {"qvec": rot_quat.tolist(), "tvec": translation.tolist()},
         }
 
     sorted_out_data = {k: out_data[k] for k in sorted(out_data.keys())}
@@ -211,12 +152,17 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
         if camera_source_path.is_file()
         else pycolmap.Reconstruction(camera_source_path)
     )
+    orig_rec_cam = (
+        load_json_data(camera_source_path)
+        if camera_source_path.is_file()
+        else pycolmap.Reconstruction(camera_source_path)
+    )
     rec_pts = pycolmap.Reconstruction(point_source_path)
     orig_rec_pts = pycolmap.Reconstruction(point_source_path)
 
-    # Find the transform to bring camera_source int point_source space
+    # Find the transform to bring point_source into camera_source space
     # p = s * R * q + t
-    s, R, t = get_alignment_transform(rec_pts, rec_cam)
+    s, R, t = get_alignment_transform(rec_cam, rec_pts)
     print(f"Alignment found: Scale={s:.4f}")
 
     img_to_img_map = {image.name: image for image in rec_cam.images.values()}
@@ -239,13 +185,14 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
         # Copy the intrinsics from src_cam to cam and the extrinsics from src_image to image
 
         src_cam.camera_id = cam.camera_id
-        cam = src_cam
+        rec_pts.cameras[image.camera_id] = src_cam
+        image.cam_from_world.translation = src_image.cam_from_world.translation
+        image.cam_from_world.rotation.quat = src_image.cam_from_world.rotation.quat
 
-        Q = Rot.from_matrix(R).as_quat()
-        w2c = src_image.cam_from_world
-        w2c.translation = s * (R @ w2c.translation) + t
-        w2c.rotation.quat *= Q
-        image.cam_from_world = w2c
+        # Rotate, scale and translate points to match src coord frame
+        for p in rec_pts.points3D.values():
+            p.xyz = s * (R @ p.xyz) + t
+
 
     output_path.mkdir(parents=True, exist_ok=True)
     rec_pts.write(output_path)
@@ -253,11 +200,9 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
 
     common_names = get_common_names(rec_cam, rec_pts)[0]
 
-    save_cameras_json(rec_cam, output_path / "cameras_aligned_source.json", alignment=(s, R, t), common_names=common_names)
+    save_cameras_json(rec_cam, output_path / "cameras_aligned_source.json", common_names=common_names)
 
-    save_cameras_json(
-        orig_rec_pts, output_path / "cameras_reference.json", common_names=common_names
-    )
+    save_cameras_json(orig_rec_pts, output_path / "cameras_reference.json", common_names=common_names)
 
 
 if __name__ == "__main__":
