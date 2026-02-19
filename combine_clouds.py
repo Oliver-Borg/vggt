@@ -155,11 +155,39 @@ def save_cameras_json(reconstruction, output_path: Path, common_names: set[str] 
     print(f"Saved camera parameters to {output_path}")
 
 
+def load_point_cloud(point_source_path: Path) -> pycolmap.Reconstruction:
+    try:
+        if "cameras.bin" not in os.listdir(point_source_path):
+            raise ValueError(f"No cameras.bin found in {point_source_path}")
+        return pycolmap.Reconstruction(point_source_path)
+    except Exception as e:
+        # We assume a folder is given with 0, 1, 2 etc.
+        # In that case we want to find the pcd with the most 3D points
+        best_pcd = None
+        best_num_points = 0
+        best_path = None
+        for folder in os.listdir(point_source_path):
+            folder_path = Path(os.path.join(point_source_path, folder))
+            if os.path.isdir(folder_path):
+                pcd = load_point_cloud(folder_path)
+                num_points = len(pcd.points3D)
+                if num_points > best_num_points:
+                    best_pcd = pcd
+                    best_num_points = num_points
+                    best_path = folder_path
+
+        if best_pcd is not None:
+            print("Best point cloud found:", best_path, "with", len(best_pcd.points3D), "points")
+            return best_pcd
+        else:
+            raise ValueError(f"No point cloud found in {point_source_path}")
+
+
 def load_cameras(camera_source_path: Path) -> pycolmap.Reconstruction:
     rec = (
         load_json_data(camera_source_path)
         if camera_source_path.is_file()
-        else pycolmap.Reconstruction(camera_source_path)
+        else load_point_cloud(camera_source_path)
     )
     return rec
 
@@ -171,10 +199,12 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
 
     rec_pts will contain cameras and points in the coordinate frame of rec_cam.
     """
+    print(f"Loading reconstructions from {camera_source_path} and {point_source_path}")
+
     rec_cam = load_cameras(camera_source_path)
     orig_rec_cam = load_cameras(camera_source_path)
-    rec_pts = pycolmap.Reconstruction(point_source_path)
-    orig_rec_pts = pycolmap.Reconstruction(point_source_path)
+    rec_pts = load_point_cloud(point_source_path)
+    orig_rec_pts = load_point_cloud(point_source_path)
 
     # Find the transform to bring point_source into camera_source space
     # p = s * R * q + t
@@ -226,7 +256,8 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
         image.cam_from_world.translation = src_image.cam_from_world.translation
         image.cam_from_world.rotation.quat = src_image.cam_from_world.rotation.quat
 
-        # Rotate, scale and translate points to match src coord frame
+    # Rotate, scale and translate points to match src coord frame
+    if s > 0.0:
         for p in rec_pts.points3D.values():
             p.xyz = s * (R @ p.xyz) + t
 
@@ -245,10 +276,17 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
     #         print(f"Mean RRE: {np.mean(rre_list):.4f}")
     #         print(f"Mean RTE: {np.mean(rte_list):.4f}")
 
+    print("Before alignment")
+    rre_list, rte_list = get_metrics(get_poses(orig_rec_cam), get_poses(orig_rec_pts))
+    print(f"Mean RRE: {np.mean(rre_list):.4f}")
+    print(f"Mean RTE: {np.mean(rte_list):.4f}")
+
+    print("After alignment")
     rre_list, rte_list = get_metrics(get_poses(orig_rec_cam), get_poses(orig_rec_pts), alignment=(s, R, t))
     print(f"Mean RRE: {np.mean(rre_list):.4f}")
     print(f"Mean RTE: {np.mean(rte_list):.4f}")
 
+    print("After swap (these should be 0)")
     rre_list, rte_list = get_metrics(get_poses(rec_pts), get_poses(orig_rec_cam))
     print(f"Mean RRE: {np.mean(rre_list):.4f}")
     print(f"Mean RTE: {np.mean(rte_list):.4f}")
