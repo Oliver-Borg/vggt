@@ -6,7 +6,17 @@ from pathlib import Path
 import cv2
 import os
 
-from cam_utils import cfw_to_c2w, mat_to_quat, umeyama_alignment
+from cam_utils import (
+    build_matrix,
+    c2w_to_cfw,
+    cfw_to_c2w,
+    decompose_matrix,
+    get_metrics,
+    mat_to_quat,
+    get_poses,
+    umeyama_alignment,
+    verify_look_at_origin,
+)
 
 
 def get_common_names(rec_cam: pycolmap.Reconstruction, rec_pts: pycolmap.Reconstruction):
@@ -17,19 +27,20 @@ def get_common_names(rec_cam: pycolmap.Reconstruction, rec_pts: pycolmap.Reconst
     return common_names, names_cam, names_pts
 
 
-def get_alignment_transform(rec_cam: pycolmap.Reconstruction, rec_pts: pycolmap.Reconstruction):
+def get_alignment_transform(from_recon: pycolmap.Reconstruction, to_recon: pycolmap.Reconstruction):
     # Match images by name to find common camera centers
     # q: centers from point_source, p: centers from camera_source
 
-    common_names, names_cam, names_pts = get_common_names(rec_cam, rec_pts)
+    common_names, names_from, names_to = get_common_names(from_recon, to_recon)
 
     if len(common_names) < 3:
         raise ValueError(f"Need at least 3 common images for alignment. Found: {len(common_names)}")
 
-    p = np.array([names_cam[name] for name in common_names])
-    q = np.array([names_pts[name] for name in common_names])
+    sorted_names = sorted(list(common_names))
+    to_points = np.array([names_to[name] for name in sorted_names])
+    from_points = np.array([names_from[name] for name in sorted_names])
 
-    return umeyama_alignment(q, p)
+    return umeyama_alignment(from_points=from_points, to_points=to_points)
 
 
 def load_json_data(path: Path) -> pycolmap.Reconstruction:
@@ -62,8 +73,10 @@ def load_json_data(path: Path) -> pycolmap.Reconstruction:
         name = Path(fname).name
 
         c2w = np.array(frame["transform_matrix"])
-        # TODO Check if this is necessary
-        # c2w[0:3, 1:3] *= -1
+        verify_opengl = verify_look_at_origin(c2w, is_opencv=False)
+        c2w[0:3, 1:3] *= -1
+        verify_colmap = verify_look_at_origin(c2w, is_opencv=True)
+        assert verify_colmap["is_pointing_at_origin"] and verify_opengl["is_pointing_at_origin"]
 
         if frame_intrinsics:
             w_i, h_i, fx_i, fy_i, cx_i, cy_i = frame_intrinsics
@@ -95,10 +108,9 @@ def load_json_data(path: Path) -> pycolmap.Reconstruction:
 
         translation = c2w[:3, 3]
         rotation_matrix = c2w[:3, :3]
-        rotation_quat = mat_to_quat(rotation_matrix)
 
-        images[name].cam_from_world.rotation = pycolmap.Rotation3d(rotation_quat)
-        images[name].cam_from_world.translation = translation
+        cfw = c2w_to_cfw(translation, rotation_matrix)
+        images[name].cam_from_world = cfw
 
     recon = pycolmap.Reconstruction()
     for name, camera in cameras.items():
@@ -143,26 +155,51 @@ def save_cameras_json(reconstruction, output_path: Path, common_names: set[str] 
     print(f"Saved camera parameters to {output_path}")
 
 
+def load_cameras(camera_source_path: Path) -> pycolmap.Reconstruction:
+    rec = (
+        load_json_data(camera_source_path)
+        if camera_source_path.is_file()
+        else pycolmap.Reconstruction(camera_source_path)
+    )
+    return rec
+
+
 def swap_and_align(camera_source_path: Path, point_source_path: Path, output_path: Path):
     """
     This migrates the cameras from the camera_source_path to the point_source_path in place.
+    It then transforms the points in point_source_path to match the cameras.
+
+    rec_pts will contain cameras and points in the coordinate frame of rec_cam.
     """
-    rec_cam = (
-        load_json_data(camera_source_path)
-        if camera_source_path.is_file()
-        else pycolmap.Reconstruction(camera_source_path)
-    )
-    orig_rec_cam = (
-        load_json_data(camera_source_path)
-        if camera_source_path.is_file()
-        else pycolmap.Reconstruction(camera_source_path)
-    )
+    rec_cam = load_cameras(camera_source_path)
+    orig_rec_cam = load_cameras(camera_source_path)
     rec_pts = pycolmap.Reconstruction(point_source_path)
     orig_rec_pts = pycolmap.Reconstruction(point_source_path)
 
     # Find the transform to bring point_source into camera_source space
     # p = s * R * q + t
-    s, R, t = get_alignment_transform(rec_cam, rec_pts)
+    s, R, t = get_alignment_transform(from_recon=rec_pts, to_recon=rec_cam)
+
+    pts_poses = get_poses(rec_pts)
+    cam_poses = get_poses(rec_cam)
+    keys = sorted(pts_poses.keys() & cam_poses.keys())
+
+    # for c2w in cam_poses.values():
+    #     verify = verify_look_at_origin(c2w, is_opencv=True)
+    #     assert verify["is_pointing_at_origin"]
+
+    # for i, c2w in enumerate(pts_poses.values()):
+    #     translation, rotation_matrix = decompose_matrix(c2w)
+    #     translation = s * (R @ translation) + t
+    #     rotation_matrix = R @ rotation_matrix
+    #     c2w = build_matrix(translation, rotation_matrix)
+
+    #     verify = verify_look_at_origin(c2w, is_opencv=True)
+    #     assert verify["is_pointing_at_origin"]
+
+    pts_cam_positions = np.array([s * R @ pts_poses[k][:3, 3] + t for k in keys])
+    rec_cam_positions = np.array([cam_poses[k][:3, 3] for k in keys])
+
     print(f"Alignment found: Scale={s:.4f}")
 
     img_to_img_map = {image.name: image for image in rec_cam.images.values()}
@@ -193,12 +230,28 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
         for p in rec_pts.points3D.values():
             p.xyz = s * (R @ p.xyz) + t
 
-
     output_path.mkdir(parents=True, exist_ok=True)
     rec_pts.write(output_path)
     print(f"Reconstruction exported to {output_path}")
 
     common_names = get_common_names(rec_cam, rec_pts)[0]
+
+    # all_recons = [rec_cam, rec_pts, orig_rec_cam, orig_rec_pts]
+    # names = ["rec_cam", "rec_pts", "orig_rec_cam", "orig_rec_pts"]
+    # for i, rec_1 in enumerate(all_recons):
+    #     for j, rec_2 in enumerate(all_recons):
+    #         print(f"Comparing {names[i]} and {names[j]}")
+    #         rre_list, rte_list = get_metrics(get_poses(rec_1), get_poses(rec_2), alignment=(s, R, t))
+    #         print(f"Mean RRE: {np.mean(rre_list):.4f}")
+    #         print(f"Mean RTE: {np.mean(rte_list):.4f}")
+
+    rre_list, rte_list = get_metrics(get_poses(orig_rec_cam), get_poses(orig_rec_pts), alignment=(s, R, t))
+    print(f"Mean RRE: {np.mean(rre_list):.4f}")
+    print(f"Mean RTE: {np.mean(rte_list):.4f}")
+
+    rre_list, rte_list = get_metrics(get_poses(rec_pts), get_poses(orig_rec_cam))
+    print(f"Mean RRE: {np.mean(rre_list):.4f}")
+    print(f"Mean RTE: {np.mean(rte_list):.4f}")
 
     save_cameras_json(rec_cam, output_path / "cameras_aligned_source.json", common_names=common_names)
 
