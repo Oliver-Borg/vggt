@@ -11,6 +11,7 @@ import time
 from typing import TypedDict, get_args
 import torch
 
+from check_sparse import check_sparse_folder
 from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
 
 
@@ -134,15 +135,19 @@ def run_colmap_pipeline(
 
 
 def run_vggt_pipeline(
-    base_out: str, conf_thres_value: float = 0.0, sampling_mode: SAMPLING_MODE = "random"
+    base_out: str,
+    conf_thres_value: float = 0.0,
+    sampling_mode: SAMPLING_MODE = "random",
+    num_points: int = 100000,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
         scene_dir=base_out,
         num_profiling_runs=0,
-        use_ba=sampling_mode=="ba",
+        use_ba=sampling_mode == "ba",
         conf_thres_value=conf_thres_value,
         sampling_mode=sampling_mode,
+        num_points=num_points,
     )
 
 
@@ -188,11 +193,23 @@ def main(
     conf_thres_value: float,
     force: bool,
     sampling_mode: SAMPLING_MODE,
+    num_points: int = 100000,
 ):
     name = name.strip("/")
+    extra_parts = []
     if num_images:
-        name = f"{name}_n{num_images}"
-    name = f"{name}_s{seed}_c{conf_thres_value}_{sampling_mode}"
+        extra_parts.append(f"n{num_images}")
+
+    extra_parts.append(f"s{seed}")
+
+    if choice == "vggt":
+        if sampling_mode != "ba":
+            extra_parts.append(f"c{conf_thres_value}")
+            extra_parts.append(f"p{num_points}")
+        extra_parts.append(sampling_mode)
+
+    # name = f"{name}_s{seed}_c{conf_thres_value}_p{num_points}_{sampling_mode}"
+    name = name + "_" + "_".join(extra_parts)
     base_out = f"./{choice}_outputs/{name}"
     sparse_path = os.path.join(base_out, "sparse")
     images_path = os.path.join(base_out, "images")
@@ -223,7 +240,7 @@ def main(
     if choice == "colmap":
         profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=num_images < 50)
     elif choice == "vggt":
-        profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode)
+        profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode, num_points)
     else:
         raise ValueError("Invalid choice")
 
@@ -233,6 +250,8 @@ def main(
 
     print(f"\nPipeline finished. Results saved in: {base_out}")
     print(f"Time: {total_time:.2f}s")
+
+    check_sparse_folder(sparse_path)
 
 
 if __name__ == "__main__":
@@ -246,12 +265,13 @@ if __name__ == "__main__":
     parser.add_argument("--conf_thres_value", type=float, default=5.0, help="Confidence threshold for point cloud")
     parser.add_argument("--force", action="store_true", help="Force reconstruction")
     parser.add_argument(
-        "--sampling-mode",
+        "--sampling_mode",
         type=str,
         default="random",
         choices=list(get_args(SAMPLING_MODE)),
         help="Force reconstruction",
     )
+    parser.add_argument("--num_points", type=int, default=100000, help="Number of points to use for reconstruction")
 
     args = parser.parse_args()
     main(
@@ -263,4 +283,5 @@ if __name__ == "__main__":
         conf_thres_value=args.conf_thres_value,
         force=args.force,
         sampling_mode=args.sampling_mode,
+        num_points=args.num_points,
     )
