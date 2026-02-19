@@ -203,6 +203,7 @@ def run_vggt(
     conf_thres_value: float = 5.0,
     num_profiling_runs: int = 0,
     sampling_mode: SAMPLING_MODE = "random",
+    num_points: int = 100000,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -261,7 +262,7 @@ def run_vggt(
     # Load images and original coordinates
     # Load Image in 1024, while running VGGT with 518
     vggt_fixed_resolution = 518
-    img_load_resolution = 1024
+    img_load_resolution = 518
 
     images, masks, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
     images = images.to(device)
@@ -298,15 +299,21 @@ def run_vggt(
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
     points_3d[masks[..., 0] == 0] = np.nan
 
+    model = None
+
     with torch.no_grad():
         torch.cuda.empty_cache()
+
+    print(get_gpu_stats())
+
+    points_conf_rgb = None
 
     if use_ba:
         image_size = np.array(images.shape[-2:])
         scale = img_load_resolution / vggt_fixed_resolution
         shared_camera = shared_camera
 
-        with torch.cuda.amp.autocast(dtype=dtype):
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
             # Predicting Tracks
             # Using VGGSfM tracker instead of VGGT tracker for efficiency
             # VGGT tracker requires multiple backbone runs to query different frames (this is a problem caused by the training process)
@@ -355,7 +362,7 @@ def run_vggt(
         reconstruction_resolution = img_load_resolution
     else:
         conf_thres_value = conf_thres_value
-        max_points_for_colmap = 100000  # randomly sample 3D points
+        max_points_for_colmap = num_points  # randomly sample 3D points
         shared_camera = False  # in the feedforward manner, we do not support shared camera
         camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
 
@@ -377,7 +384,7 @@ def run_vggt(
 
         conf_mask = depth_conf >= conf_thres_value
 
-        assert ((masks[..., 0] == 0) & conf_mask).sum() == 0
+        assert conf_thres_value <= 0.0 or ((masks[..., 0] == 0) & conf_mask).sum() == 0
         # at most writing 100000 3d points to colmap reconstruction object
         if sampling_mode == "random" or sampling_mode == "confidence":
             conf_mask = randomly_limit_trues(
@@ -426,7 +433,8 @@ def run_vggt(
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))
-    trimesh.PointCloud(points_3d, colors=points_conf_rgb).export(os.path.join(scene_dir, "sparse/points_conf.ply"))
+    if points_conf_rgb is not None:
+        trimesh.PointCloud(points_3d, colors=points_conf_rgb).export(os.path.join(scene_dir, "sparse/points_conf.ply"))
     saving_t2 = time.time()
 
     return VGGTProfiling(
