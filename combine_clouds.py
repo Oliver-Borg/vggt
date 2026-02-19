@@ -122,12 +122,19 @@ def load_json_data(path: Path) -> pycolmap.Reconstruction:
     return recon
 
 
-def save_cameras_json(reconstruction, output_path: Path, common_names: set[str] | None = None):
+def save_cameras_json(
+    reconstruction,
+    output_path: Path,
+    common_names: set[str] | None = None,
+    alignment: tuple[float, np.ndarray, np.ndarray] | None = None,
+):
     """
     Exports camera intrinsics and extrinsics to a JSON file.
     If 'alignment' (s, R, t) is provided, the poses are transformed before saving.
     """
     out_data = {}
+
+    s, R, t = alignment if alignment is not None else (1.0, np.eye(3), np.zeros(3))
 
     for img_id, img in reconstruction.images.items():
         cam = reconstruction.cameras[img.camera_id]
@@ -135,6 +142,10 @@ def save_cameras_json(reconstruction, output_path: Path, common_names: set[str] 
             continue
 
         translation, rotation_matrix = cfw_to_c2w(img.cam_from_world)
+
+        translation = s * (R @ translation) + t
+        rotation_matrix = R @ rotation_matrix
+
         rot_quat = mat_to_quat(rotation_matrix)
 
         out_data[img.name] = {
@@ -184,11 +195,7 @@ def load_point_cloud(point_source_path: Path) -> pycolmap.Reconstruction:
 
 
 def load_cameras(camera_source_path: Path) -> pycolmap.Reconstruction:
-    rec = (
-        load_json_data(camera_source_path)
-        if camera_source_path.is_file()
-        else load_point_cloud(camera_source_path)
-    )
+    rec = load_json_data(camera_source_path) if camera_source_path.is_file() else load_point_cloud(camera_source_path)
     return rec
 
 
@@ -291,9 +298,11 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
     print(f"Mean RRE: {np.mean(rre_list):.4f}")
     print(f"Mean RTE: {np.mean(rte_list):.4f}")
 
-    save_cameras_json(rec_cam, output_path / "cameras_aligned_source.json", common_names=common_names)
-
-    save_cameras_json(orig_rec_pts, output_path / "cameras_reference.json", common_names=common_names)
+    save_cameras_json(rec_pts, output_path / "copied_cameras.json", common_names=common_names)
+    save_cameras_json(orig_rec_cam, output_path / "original_cameras.json", common_names=common_names)
+    save_cameras_json(
+        orig_rec_pts, output_path / "aligned_cameras.json", common_names=common_names, alignment=(s, R, t)
+    )
 
 
 if __name__ == "__main__":
