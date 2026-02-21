@@ -3,6 +3,7 @@ from collections import OrderedDict
 import glob
 import json
 import os
+from pathlib import Path
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
@@ -25,11 +26,14 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
         Param(name="num_images", pattern=r"_n(\d+)", cast=int),
         Param(name="seed", pattern=r"_s(\d+)", cast=int),
         Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
+        Param(name="num_points", pattern=r"_p(\d+)", cast=int),
+        Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
+        Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     ]
     params: dict[str, str | float | int | None] = {}
     for p in regexes:
         if match := re.search(p.pattern, folder_name):
-            params[p.name] = p.cast(match.group(1))
+            params[p.name] = p.cast([g for g in match.groups() if g is not None][0])
         else:
             params[p.name] = None
     return params
@@ -81,7 +85,10 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
                     metrics = parser(data, file_path)
 
                     # Construct record
-                    record = {"method": method, "source": source_name, **params, **metrics}
+                    record = {"method": method, "source": source_name}
+                    record.update(params)
+                    record.update(metrics)
+                    record["file_path"] = file_path
                     records.append(record)
 
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
@@ -95,7 +102,16 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
     # Merge rows that share the same unique identifiers (method, num_images, seed, etc.)
     # Since SfM and GS metrics come from different files but belong to the same run,
     # we group by identifiers and combine the columns.
-    group_cols = ["method", "num_images", "seed", "conf_thres_value", "val_step"]
+    group_cols = [
+        "method",
+        "num_images",
+        "seed",
+        "conf_thres_value",
+        "val_step",
+        "num_cameras",
+        "num_points",
+        "sampling_mode",
+    ]
     # Filter only columns that exist to avoid key errors
     valid_group_cols = [c for c in group_cols if c in df.columns]
 
@@ -113,11 +129,14 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float]:
 
 def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float | int | None]:
     """Extracts PSNR and LPIPS from gsplat json."""
-    return {
+    parsed_data = {
         "psnr": data.get("psnr"),
         "lpips": data.get("lpips"),
         "val_step": int(filename.split("val_step")[-1].split(".json")[0]),
     }
+    if "num_points" in data:
+        parsed_data["num_points"] = int(data["num_points"])
+    return parsed_data
 
 
 def parse_filters(filter_str: str) -> Dict[str, List[Any]]:
@@ -171,7 +190,7 @@ def plot_metric(
     if df.empty or y not in df.columns or df[y].isnull().all():
         ax.text(0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes)
         return
-    df[x] = df[x].fillna(5.0)
+    # df[x] = df[x].fillna(0)
 
     sns.lineplot(
         data=df,
@@ -219,11 +238,12 @@ def plot_metric(
     ax.set_ylabel(ylabel, fontsize=12)
     xlabel = " ".join(x.split("_")).title()
     ax.set_xlabel(xlabel, fontsize=11)
-    # ax.set_xscale("log")
-
-    unique_x = sorted(df[x].fillna(5.0).unique().round())
-    ax.set_xticks(unique_x)
-    ax.set_xticklabels([str(n) for n in unique_x])
+    if x in ["num_points"]:
+        ax.set_xscale("log")
+    else:
+        unique_x = sorted(df[x].fillna(5.0).unique().round())
+        ax.set_xticks(unique_x)
+        ax.set_xticklabels([str(n) for n in unique_x])
 
     ax.grid(True, which="major", ls="-", alpha=0.15)
 
@@ -252,6 +272,7 @@ def main():
             if key in df.columns:
                 print(f"Filtering {key} in {vals}")
                 # If filtering by conf_thres_value, keep colmap rows (which don't have this param)
+                # TODO Maybe just keep Nones?
                 if key == "conf_thres_value":
                     df = df[df[key].isin(vals) | (df["method"] == "colmap")]
                 else:
@@ -361,9 +382,10 @@ def main():
             axes[i].legend(handles=handles, labels=labels, title="Series", fontsize=10)
 
     plt.tight_layout()
-    out_file = f"full_evaluation {args.name} {args.x_axis} {args.split_param}.png"
+    out_file = f"plots/full_evaluation-{args.name}-{args.x_axis}-{args.split_param}.png"
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
     plt.savefig(out_file, dpi=300)
-    print(f"Comprehensive plot saved: {out_file}")
+    print("Comprehensive plot saved:", Path(out_file))
     plt.show()
 
 
