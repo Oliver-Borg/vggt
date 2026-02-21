@@ -382,7 +382,7 @@ def run_vggt(
 
         depth_conf = (depth_conf - depth_conf.min()) / (depth_conf.max() - depth_conf.min())
 
-        conf_mask = depth_conf >= conf_thres_value
+        conf_mask = (depth_conf >= conf_thres_value) & (~np.isnan(points_3d[..., 0]))
 
         assert conf_thres_value <= 0.0 or ((masks[..., 0] == 0) & conf_mask).sum() == 0
         # at most writing 100000 3d points to colmap reconstruction object
