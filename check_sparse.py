@@ -1,10 +1,11 @@
 import argparse
-import pycolmap
+from pathlib import Path
 
+from combine_clouds import load_point_cloud
 
 def check_sparse_folder(sparse_folder: str) -> bool:
     # Load the reconstruction from the sparse folder
-    reconstruction = pycolmap.Reconstruction(sparse_folder)
+    reconstruction = load_point_cloud(Path(sparse_folder))
     print(reconstruction.summary())
 
     # Check if there are points in the point cloud
