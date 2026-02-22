@@ -18,6 +18,7 @@ class Param:
     name: str
     pattern: str
     cast: type[float | str | int]
+    default: float | str | int | None = None
 
 
 def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
@@ -28,6 +29,7 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
         Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
         Param(name="num_points", pattern=r"_p(\d+)", cast=int),
         Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
+        Param(name="image_mode", pattern=r"_(shuffle)|(distributed)", cast=str, default="shuffle"),
         Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     ]
     params: dict[str, str | float | int | None] = {}
@@ -35,7 +37,7 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
         if match := re.search(p.pattern, folder_name):
             params[p.name] = p.cast([g for g in match.groups() if g is not None][0])
         else:
-            params[p.name] = None
+            params[p.name] = p.default
     return params
 
 
@@ -135,7 +137,7 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "val_step": int(filename.split("val_step")[-1].split(".json")[0]),
     }
     if "num_points" in data:
-        parsed_data["num_points"] = int(data["num_points"])
+        parsed_data["num_points"] = round(int(data["num_points"]), -3)
     return parsed_data
 
 
