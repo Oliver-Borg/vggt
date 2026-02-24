@@ -383,8 +383,15 @@ def main():
         if handles:
             axes[i].legend(handles=handles, labels=labels, title="Series", fontsize=10)
 
+    suffix = f"plots/full_evaluation-{args.name}-{args.x_axis}-{args.split_param}"
+
+    csv_out_file = f"{suffix}.csv"
+    os.makedirs(os.path.dirname(csv_out_file), exist_ok=True)
+    df.to_csv(csv_out_file, index=False)
+    print("Dataframe saved:", Path(csv_out_file))
+
     plt.tight_layout()
-    out_file = f"plots/full_evaluation-{args.name}-{args.x_axis}-{args.split_param}.png"
+    out_file = f"{suffix}.png"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     plt.savefig(out_file, dpi=300)
     print("Comprehensive plot saved:", Path(out_file))
