@@ -8,11 +8,14 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import TypedDict, get_args
+from typing import Literal, TypedDict, get_args
 import torch
 
 from check_sparse import check_sparse_folder
 from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
+
+
+IMAGE_MODE = Literal["shuffle", "distributed"]
 
 
 class GPUMonitor(threading.Thread):
@@ -184,6 +187,29 @@ def save_timing(
         json.dump(stat, f, indent=4)
 
 
+def get_image_list(all_images: list[str], num_images: int | None, seed: int, image_mode: IMAGE_MODE):
+
+    def sorter(name: str):
+        digits = [c for c in name if c.isdigit()]
+        return int("".join(digits)) if digits else 0
+
+    all_images.sort(key=sorter)
+
+    if not num_images:
+        return all_images
+    if image_mode == "shuffle":
+        random.seed(seed)
+        shuffle(all_images)
+        all_images = all_images[:num_images]
+    elif image_mode == "distributed":
+        image_subset = []
+        for i in range(num_images):
+            k = (int(round(i / num_images *  len(all_images))) + seed - 42) % len(all_images)
+            image_subset.append(all_images[k])
+        all_images = image_subset
+    return all_images
+
+
 def main(
     name: str,
     input_path: str,
@@ -193,6 +219,7 @@ def main(
     conf_thres_value: float,
     force: bool,
     sampling_mode: SAMPLING_MODE,
+    image_mode: IMAGE_MODE,
     num_points: int = 100000,
 ):
     name = name.strip("/")
@@ -207,6 +234,8 @@ def main(
             extra_parts.append(f"c{conf_thres_value}")
             extra_parts.append(f"p{num_points}")
         extra_parts.append(sampling_mode)
+
+    extra_parts.append(image_mode)
 
     # name = f"{name}_s{seed}_c{conf_thres_value}_p{num_points}_{sampling_mode}"
     name = name + "_" + "_".join(extra_parts)
@@ -224,11 +253,9 @@ def main(
 
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
-    random.seed(seed)
-    shuffle(all_images)
 
-    if num_images:
-        all_images = all_images[:num_images]
+    all_images = get_image_list(all_images, num_images, seed, image_mode)
+
     num_images = len(all_images)
 
     print(f"Copying {len(all_images)} images to {images_path}...")
@@ -269,7 +296,14 @@ if __name__ == "__main__":
         type=str,
         default="random",
         choices=list(get_args(SAMPLING_MODE)),
-        help="Force reconstruction",
+        help="Sampling mode for point cloud subsampling",
+    )
+    parser.add_argument(
+        "--image_mode",
+        type=str,
+        default="distributed",
+        choices=list(get_args(IMAGE_MODE)),
+        help="Image selection mode",
     )
     parser.add_argument("--num_points", type=int, default=100000, help="Number of points to use for reconstruction")
 
@@ -283,5 +317,6 @@ if __name__ == "__main__":
         conf_thres_value=args.conf_thres_value,
         force=args.force,
         sampling_mode=args.sampling_mode,
+        image_mode=args.image_mode,
         num_points=args.num_points,
     )
