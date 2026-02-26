@@ -21,17 +21,21 @@ class Param:
     default: float | str | int | None = None
 
 
+regexes = [
+    Param(name="num_images", pattern=r"_n(\d+)", cast=int),
+    Param(name="seed", pattern=r"_s(\d+)", cast=int),
+    Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
+    Param(name="num_points", pattern=r"_p(\d+)", cast=int),
+    Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
+    Param(name="image_mode", pattern=r"_(shuffle)|(distributed)", cast=str, default="shuffle"),
+    Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
+    Param(name="gt_eval_data", pattern=r"_(gteval)", cast=str, default="traineval"),
+    Param(name="pose_opt", pattern=r"_(poseopt)", cast=str, default="defpose"),
+]
+
+
 def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
     """Extracts parameters from a folder name using regex."""
-    regexes = [
-        Param(name="num_images", pattern=r"_n(\d+)", cast=int),
-        Param(name="seed", pattern=r"_s(\d+)", cast=int),
-        Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
-        Param(name="num_points", pattern=r"_p(\d+)", cast=int),
-        Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
-        Param(name="image_mode", pattern=r"_(shuffle)|(distributed)", cast=str, default="shuffle"),
-        Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
-    ]
     params: dict[str, str | float | int | None] = {}
     for p in regexes:
         if match := re.search(p.pattern, folder_name):
@@ -104,16 +108,7 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
     # Merge rows that share the same unique identifiers (method, num_images, seed, etc.)
     # Since SfM and GS metrics come from different files but belong to the same run,
     # we group by identifiers and combine the columns.
-    group_cols = [
-        "method",
-        "num_images",
-        "seed",
-        "conf_thres_value",
-        "val_step",
-        "num_cameras",
-        "num_points",
-        "sampling_mode",
-    ]
+    group_cols = ["method"] + [reg.name for reg in regexes]
     # Filter only columns that exist to avoid key errors
     valid_group_cols = [c for c in group_cols if c in df.columns]
 
@@ -260,16 +255,19 @@ def main():
     parser.add_argument("--split_param", default=None, help="Optional param to split series, e.g., conf_thres_value")
     parser.add_argument("--filter", default=None, help="Filter string, e.g. 'num_images=10,20;conf_thres_value=0.5'")
     args = parser.parse_args()
+    plot_graph(args.name, args.x_axis, args.split_param, args.filter)
 
-    df = load_metrics_to_df(args.name, methods=["colmap", "vggt"])
+
+def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: str | None = None):
+    df = load_metrics_to_df(name, methods=["colmap", "vggt"])
 
     if df.empty:
         print("No data found.")
         return
 
     # Apply Filters
-    if args.filter:
-        filters = parse_filters(args.filter)
+    if filter:
+        filters = parse_filters(filter)
         for key, vals in filters.items():
             if key in df.columns:
                 print(f"Filtering {key} in {vals}")
@@ -286,10 +284,10 @@ def main():
             print("Dataframe is empty after filtering.")
             return
 
-    if args.split_param and args.split_param in df.columns:
-        split_vals = df[args.split_param].fillna("").astype(str)
+    if split_param and split_param in df.columns:
+        split_vals = df[split_param].fillna("").astype(str)
         df["plot_series"] = df["method"] + "-" + split_vals
-        unique_splits = sorted(df[args.split_param].unique())
+        unique_splits = sorted(df[split_param].unique())
     else:
         df["plot_series"] = df["method"]
         unique_splits = ["colmap", "vggt"]
@@ -311,7 +309,7 @@ def main():
     for series in unique_series:
         method = "colmap" if "colmap" in series else "vggt"
 
-        if args.split_param:
+        if split_param:
             val_str = series.replace(f"{method}-", "")
             original_val = next((v for v in unique_splits if str(v) == val_str), None)
             color_map[series] = val_to_color.get(original_val, "#333333")
@@ -327,7 +325,7 @@ def main():
 
     colmap_df = df[df["method"] == "colmap"]
 
-    if args.x_axis == "conf_thres_value" and not colmap_df.empty:
+    if x_axis == "conf_thres_value" and not colmap_df.empty:
         grouped = colmap_df.groupby("plot_series")
 
         colmap_means_by_series = grouped.mean(numeric_only=True).to_dict(orient="index")
@@ -348,11 +346,11 @@ def main():
         hlines_dict = OrderedDict()
         hranges_dict = OrderedDict()
 
-        if args.x_axis == "conf_thres_value" and not colmap_df.empty:
+        if x_axis == "conf_thres_value" and not colmap_df.empty:
             plot_df = df[df["method"] != "colmap"]
 
             for series_name, metric_values in list(
-                sorted(list(colmap_means_by_series.items()), key=lambda x: x[1].get(args.split_param))
+                sorted(list(colmap_means_by_series.items()), key=lambda x: x[1].get(split_param))
             ):
                 if config["y"] in metric_values:
                     hlines_dict[series_name] = metric_values[config["y"]]
@@ -365,7 +363,7 @@ def main():
 
         plot_metric(
             df=plot_df,
-            x=args.x_axis,
+            x=x_axis,
             y=config["y"],
             series_col="plot_series",
             ax=ax,
@@ -383,7 +381,7 @@ def main():
         if handles:
             axes[i].legend(handles=handles, labels=labels, title="Series", fontsize=10)
 
-    suffix = f"plots/full_evaluation-{args.name}-{args.x_axis}-{args.split_param}"
+    suffix = f"plots/full_evaluation-{name}-{x_axis}-{split_param}"
 
     csv_out_file = f"{suffix}.csv"
     os.makedirs(os.path.dirname(csv_out_file), exist_ok=True)
