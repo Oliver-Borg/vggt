@@ -45,7 +45,7 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
     return params
 
 
-def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
+def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] | None = None) -> pd.DataFrame:
     """
     Loads both SfM and gsplat metrics for all methods into a single DataFrame.
     """
@@ -53,7 +53,7 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
 
     # (source_name, glob_pattern, json_loader_func)
     sources = [
-        ("sfm", "{method}_outputs/{scene}_n*_s*/eval_results.json", _parse_sfm_json),
+        ("sfm", "~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json", _parse_sfm_json),
         (
             "gsplat",
             os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step6999.json"),
@@ -76,6 +76,9 @@ def load_metrics_to_df(scene_name: str, methods: List[str]) -> pd.DataFrame:
                     # We assume folder structure is consistent, getting the folder name relative to the file
                     folder_path = os.path.dirname(file_path)
                     folder_name = os.path.basename(folder_path)
+                    if folders is not None and len(set(folders) & set(Path(file_path).parts)) == 0:
+                        continue
+
                     # For gsplat, the folder is 3 levels up from the json file in the original code logic
                     if source_name == "gsplat":
                         folder_name = file_path.split("/")[-3]
@@ -258,8 +261,8 @@ def main():
     plot_graph(args.name, args.x_axis, args.split_param, args.filter)
 
 
-def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: str | None = None):
-    df = load_metrics_to_df(name, methods=["colmap", "vggt"])
+def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: str | None = None, folders: list[str] | None = None):
+    df = load_metrics_to_df(name, methods=["colmap", "vggt"], folders=folders)
 
     if df.empty:
         print("No data found.")
