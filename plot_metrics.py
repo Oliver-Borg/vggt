@@ -6,7 +6,8 @@ import os
 from pathlib import Path
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
+import numpy as np
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -17,7 +18,7 @@ import seaborn as sns
 class Param:
     name: str
     pattern: str
-    cast: type[float | str | int]
+    cast: type[float | str | int] | Callable[[str], float | str | int]
     default: float | str | int | None = None
 
 
@@ -29,8 +30,22 @@ regexes = [
     Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
     Param(name="image_mode", pattern=r"_(shuffle)|(distributed)", cast=str, default="shuffle"),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
-    Param(name="gt_eval_data", pattern=r"_(gteval)", cast=str, default="traineval"),
-    Param(name="pose_opt", pattern=r"_(poseopt)", cast=str, default="defpose"),
+    Param(
+        name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default="Train Eval"
+    ),
+    Param(
+        name="pose_opt",
+        pattern=r"_(poseopt)",
+        cast=lambda x: "Pose Opt" if x == "poseopt" else "",
+        default="No Pose Opt",
+    ),
+    Param(
+        name="eval_opt",
+        pattern=r"_(evalopt)",
+        cast=lambda x: "Eval Pose Opt" if x == "evalopt" else "",
+        default="Def Eval Poses",
+    ),
+    Param(name="choice", pattern=r"(vggt|colmap)_outputs", cast=str),
 ]
 
 
@@ -181,6 +196,7 @@ def plot_metric(
     dashes: Dict[str, Any],
     hlines: Dict[str, float] | None = None,
     hranges: Dict[str, Tuple[float, float]] | None = None,
+    original_x_col: str | None = None,  # No jitter
 ) -> None:
     """
     Generic plotting function using Seaborn.
@@ -236,12 +252,15 @@ def plot_metric(
 
     ax.set_title(title, fontweight="bold", fontsize=14)
     ax.set_ylabel(ylabel, fontsize=12)
-    xlabel = " ".join(x.split("_")).title()
+
+    label_col = original_x_col if original_x_col else x
+    xlabel = " ".join(label_col.split("_")).title()
     ax.set_xlabel(xlabel, fontsize=11)
-    if x in ["num_points"]:
+
+    if label_col in ["num_points"]:
         ax.set_xscale("log")
     else:
-        unique_x = sorted(df[x].fillna(5.0).unique().round())
+        unique_x = sorted(df[label_col].fillna(5.0).unique().round())
         ax.set_xticks(unique_x)
         ax.set_xticklabels([str(n) for n in unique_x])
 
@@ -255,13 +274,17 @@ def main():
     parser = argparse.ArgumentParser(description="Plot SfM and gsplat metrics.")
     parser.add_argument("--name", required=True, help="Scene name, e.g., bonsai_8")
     parser.add_argument("--x_axis", default="num_images", help="X-Axis key")
-    parser.add_argument("--split_param", default=None, help="Optional param to split series, e.g., conf_thres_value")
+    parser.add_argument(
+        "--split_param", default=None, help="Optional param to split series, e.g., conf_thres_value,sampling_mode"
+    )
     parser.add_argument("--filter", default=None, help="Filter string, e.g. 'num_images=10,20;conf_thres_value=0.5'")
     args = parser.parse_args()
     plot_graph(args.name, args.x_axis, args.split_param, args.filter)
 
 
-def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: str | None = None, folders: list[str] | None = None):
+def plot_graph(
+    name: str, x_axis: str, split_param: str | None = None, filter: str | None = None, folders: list[str] | None = None
+):
     df = load_metrics_to_df(name, methods=["colmap", "vggt"], folders=folders)
 
     if df.empty:
@@ -287,15 +310,50 @@ def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: s
             print("Dataframe is empty after filtering.")
             return
 
-    if split_param and split_param in df.columns:
-        split_vals = df[split_param].fillna("").astype(str)
-        df["plot_series"] = df["method"] + "-" + split_vals
-        unique_splits = sorted(df[split_param].unique())
+    valid_split_cols = []
+    if split_param:
+        split_cols = [p.strip() for p in split_param.split(",") if p.strip()]
+        valid_split_cols = [c for c in split_cols if c in df.columns]
+        print(f"Invalid split cols: {set(split_cols) - set(valid_split_cols)}")
+
+    if valid_split_cols:
+        split_val_series = df[valid_split_cols[0]].fillna("").astype(str)
+        for col in valid_split_cols[1:]:
+            split_val_series = split_val_series + "-" + df[col].fillna("").astype(str)
+
+        df["plot_series"] = df["method"] + "-" + split_val_series
+        unique_splits = sorted(split_val_series.unique())
     else:
         df["plot_series"] = df["method"]
         unique_splits = ["colmap", "vggt"]
 
     unique_series = sorted(df["plot_series"].unique())
+
+    series_indices = {s: i for i, s in enumerate(unique_series)}
+    num_series = len(unique_series)
+
+    centered_indices = {s: i - (num_series - 1) / 2 for s, i in series_indices.items()}
+
+    jitter_col = f"{x_axis}_jitter"
+
+    if x_axis == "num_points":
+        jitter_factor = 0.05
+        df[jitter_col] = df.apply(
+            lambda row: row[x_axis] * (1 + centered_indices.get(row["plot_series"], 0) * jitter_factor), axis=1
+        )
+    else:
+        # Determine appropriate jitter width based on minimum distance between X values
+        unique_x = sorted(df[x_axis].dropna().unique())
+        if len(unique_x) > 1:
+            min_dist = min(np.diff(unique_x))
+        else:
+            min_dist = 1.0
+
+        jitter_width = min_dist * 0.15
+
+        df[jitter_col] = df.apply(
+            lambda row: row[x_axis] + (centered_indices.get(row["plot_series"], 0) * jitter_width), axis=1
+        )
 
     style_config = {
         "colmap": {"marker": "o", "dashes": ""},
@@ -312,7 +370,7 @@ def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: s
     for series in unique_series:
         method = "colmap" if "colmap" in series else "vggt"
 
-        if split_param:
+        if valid_split_cols:
             val_str = series.replace(f"{method}-", "")
             original_val = next((v for v in unique_splits if str(v) == val_str), None)
             color_map[series] = val_to_color.get(original_val, "#333333")
@@ -351,9 +409,13 @@ def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: s
 
         if x_axis == "conf_thres_value" and not colmap_df.empty:
             plot_df = df[df["method"] != "colmap"]
+            sort_key = valid_split_cols[0] if valid_split_cols else None
 
             for series_name, metric_values in list(
-                sorted(list(colmap_means_by_series.items()), key=lambda x: x[1].get(split_param))
+                sorted(
+                    list(colmap_means_by_series.items()),
+                    key=lambda x: x[1].get(sort_key) if sort_key and sort_key in x[1] else x[0],
+                )
             ):
                 if config["y"] in metric_values:
                     hlines_dict[series_name] = metric_values[config["y"]]
@@ -366,7 +428,8 @@ def plot_graph(name: str, x_axis: str, split_param: str | None = None, filter: s
 
         plot_metric(
             df=plot_df,
-            x=x_axis,
+            x=jitter_col,
+            original_x_col=x_axis,
             y=config["y"],
             series_col="plot_series",
             ax=ax,
