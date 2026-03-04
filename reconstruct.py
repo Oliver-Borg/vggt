@@ -2,6 +2,7 @@ import argparse
 import datetime
 import json
 import os
+from pathlib import Path
 from random import shuffle
 import random
 import shutil
@@ -245,7 +246,7 @@ def main(
     db_path = os.path.join(base_out, "database.db")
 
     if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
-        print(base_out, "has already been constructed.\nUse --force to force reconstruction.")
+        print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
         return
 
     os.makedirs(sparse_path, exist_ok=True)

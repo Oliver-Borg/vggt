@@ -152,3 +152,5 @@ data/
 colmap_outputs/
 vggt_outputs/
 test/
+plots/
+stubs/
