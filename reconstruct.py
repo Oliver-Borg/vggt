@@ -17,6 +17,7 @@ from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
 
 
 IMAGE_MODE = Literal["shuffle", "distributed"]
+COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 
 
 class GPUMonitor(threading.Thread):
@@ -76,7 +77,7 @@ def run_colmap_pipeline(
 
     passed = True
 
-    matcher_args = ["colmap", "exhaustive_matcher", "--database_path", db_path]
+    matcher_args = [COLMAP, "exhaustive_matcher", "--database_path", db_path]
     if low_view_count:
         matcher_args.extend(
             [
@@ -90,7 +91,7 @@ def run_colmap_pipeline(
         )
 
     mapper_args = [
-        "colmap",
+        COLMAP,
         "mapper",
         "--database_path",
         db_path,
@@ -122,7 +123,7 @@ def run_colmap_pipeline(
         )
 
     passed = (
-        run_command(["colmap", "feature_extractor", "--database_path", db_path, "--image_path", images_path])
+        run_command([COLMAP, "feature_extractor", "--database_path", db_path, "--image_path", images_path])
         and run_command(matcher_args)
         and run_command(mapper_args)
     )
@@ -259,7 +260,7 @@ def main(
 
     num_images = len(all_images)
 
-    print(f"Copying {len(all_images)} images to {images_path}...")
+    print(f"Copying {len(all_images)} images from {Path(input_path)} to {Path(images_path)}...")
     for img in all_images:
         shutil.copy2(os.path.join(input_path, img), os.path.join(images_path, img))
 
