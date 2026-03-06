@@ -270,6 +270,164 @@ def plot_metric(
     ax.get_legend().remove()
 
 
+def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
+    """
+    Plots a Parallel Coordinate Plot (PCP) for metrics and parameters.
+    Uses smooth curves and adds jitter to y-positions to visualize density.
+    """
+    params = [r.name for r in regexes if r.name in df.columns]
+    metrics = ["psnr", "lpips"]
+
+    # Filter metrics present in DF
+    metrics = [m for m in metrics if m in df.columns]
+    if not metrics:
+        return
+
+    num_metrics = len(metrics)
+    fig, axes = plt.subplots(
+        nrows=num_metrics, ncols=1, figsize=(max(10, len(params) * 1.5), 6 * num_metrics), sharex=False
+    )
+
+    if num_metrics == 1:
+        axes = [axes]
+
+    for ax, metric in zip(axes, metrics):
+        cols = params + [metric]
+        plot_df = df.copy()
+        range_map = {}
+
+        for col in cols:
+            series = plot_df[col]
+            s_numeric = pd.to_numeric(series, errors="coerce")
+            is_numeric = pd.api.types.is_numeric_dtype(series) or pd.api.types.is_numeric_dtype(s_numeric)
+
+            non_numeric_params = [p.name for p in regexes if hasattr(p, "cast") and p.cast not in [float, int]]
+
+            if col in non_numeric_params:
+                is_numeric = False
+
+            if is_numeric:
+                series = s_numeric
+                if series.isnull().all():
+                    plot_df[col] = 0.5
+                    range_map[col] = (0, 0, "num")
+                    continue
+
+                mn, mx = series.min(), series.max()
+                series = series.fillna(mn)
+
+                if mn == mx:
+                    plot_df[col] = 0.5
+                else:
+                    plot_df[col] = (series - mn) / (mx - mn)
+                range_map[col] = (mn, mx, "num")
+            else:
+                series = series.fillna("N/A").astype(str)
+                uniques = sorted(series.unique())
+                code_map = {val: i for i, val in enumerate(uniques)}
+                codes = series.map(code_map)
+
+                mn, mx = 0, len(uniques) - 1
+                if mn == mx:
+                    plot_df[col] = 0.5
+                else:
+                    plot_df[col] = codes / mx
+                range_map[col] = (uniques, "cat")
+
+        # Curve smoothness configuration
+        num_segments = 20
+        t = np.linspace(0, 1, num_segments)
+        smooth_t = 3 * t**2 - 2 * t**3
+
+        # Jitter configuration
+        jitter_strength = 0.05  # +/- 1% vertical jitter
+
+        # Colormap
+        cmap = plt.get_cmap("viridis")
+
+        for idx, row in plot_df.iterrows():
+            ys = row[cols].values.astype(float)
+
+            # 1. Determine Color
+            metric_norm_val = ys[-1]
+            color = cmap(metric_norm_val)
+
+            # 2. Apply Jitter (For visual distinction only)
+            # We add random noise to every axis point for this line
+            noise = np.random.uniform(-jitter_strength, jitter_strength, size=ys.shape)
+            ys_jittered = ys + noise
+
+            # Generate curve coordinates
+            curve_xs = []
+            curve_ys = []
+
+            for j in range(len(cols) - 1):
+                y_curr = ys_jittered[j]
+                y_next = ys_jittered[j + 1]
+
+                # Interpolate Y
+                interp_y = y_curr * (1 - smooth_t) + y_next * smooth_t
+                # Interpolate X
+                interp_x = j + t
+
+                curve_xs.append(interp_x)
+                curve_ys.append(interp_y)
+
+            full_x = np.concatenate(curve_xs)
+            full_y = np.concatenate(curve_ys)
+
+            ax.plot(full_x, full_y, color=color, alpha=0.4, linewidth=1.0)
+
+        # Add Colorbar
+        m_min, m_max, _ = range_map[metric]
+        norm = plt.Normalize(vmin=m_min, vmax=m_max)
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, pad=0.01, aspect=30)
+        cbar.set_label(metric.upper(), fontsize=10, fontweight="bold")
+
+        # Decorate Axes
+        ax.set_xticks(range(len(cols)))
+        ax.set_xticklabels(cols, rotation=30, ha="right", fontsize=10)
+        ax.set_yticks([])
+        # Expand limits slightly to accommodate jitter
+        ax.set_ylim(-0.15, 1.15)
+        ax.grid(False)
+
+        for i, col in enumerate(cols):
+            ax.axvline(i, color="black", linewidth=1.0, alpha=0.2)
+
+            if col in range_map:
+                info = range_map[col]
+                if info[-1] == "num":
+                    mn, mx, _ = info
+                    ax.text(i, -0.05, f"{mn:.3g}", ha="center", va="top", fontsize=9, fontweight="bold")
+                    ax.text(i, 1.05, f"{mx:.3g}", ha="center", va="bottom", fontsize=9, fontweight="bold")
+                else:
+                    uniques, _ = info
+                    if len(uniques) <= 10:
+                        for idx, u in enumerate(uniques):
+                            y_pos = idx / (len(uniques) - 1) if len(uniques) > 1 else 0.5
+                            ax.text(
+                                i,
+                                y_pos,
+                                str(u),
+                                ha="center",
+                                va="center",
+                                fontsize=8,
+                                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1),
+                            )
+                    else:
+                        ax.text(i, -0.05, str(uniques[0]), ha="center", va="top", fontsize=9)
+                        ax.text(i, 1.05, str(uniques[-1]), ha="center", va="bottom", fontsize=9)
+
+        ax.set_title(f"Parallel Coordinate Plot: Parameters vs {metric.upper()}", fontsize=14, fontweight="bold")
+
+    plt.tight_layout()
+    plt.savefig(out_file, dpi=300)
+    print("PCP saved:", out_file)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot SfM and gsplat metrics.")
     parser.add_argument("--name", required=True, help="Scene name, e.g., bonsai_8")
@@ -459,6 +617,10 @@ def plot_graph(
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     plt.savefig(out_file, dpi=300)
     print("Comprehensive plot saved:", Path(out_file))
+
+    pcp_out_file = f"{suffix}_pcp.png"
+    plot_pcp(df, pcp_out_file, color_map)
+
     plt.show()
 
 
