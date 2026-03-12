@@ -563,14 +563,17 @@ def plot_graph(
         colmap_min_by_series = grouped.min(numeric_only=True).to_dict(orient="index")
         colmap_max_by_series = grouped.max(numeric_only=True).to_dict(orient="index")
 
-    fig, axes = plt.subplots(1, 4, figsize=(26, 6))
-
+    # TODO Make this a parameter for which metrics to use
     metrics_config = [
-        {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓"},
-        {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
+        # {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓"},
+        # {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
         {"y": "psnr", "title": "Quality ($PSNR$)", "ylabel": "dB ↑"},
-        {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
+        # {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
     ]
+
+    fig, axes = plt.subplots(1, len(metrics_config), figsize=(8 * len(metrics_config), 4.5))
+    if len(metrics_config) == 1:
+        axes = [axes]
 
     for ax, config in zip(axes, metrics_config):
         plot_df = df
@@ -612,12 +615,15 @@ def plot_graph(
             hranges=hranges_dict,
         )
 
-    for i in range(4):
+    for i in range(len(axes)):
         handles, labels = axes[i].get_legend_handles_labels()
+        processed_labels = [label.replace("colmap", "COLMAP").replace("vggt", "VGGT") for label in labels]
         if handles:
-            axes[i].legend(handles=handles, labels=labels, title="Series", fontsize=10)
+            axes[i].legend(handles=handles, labels=processed_labels, title="Series", fontsize=10)
 
-    suffix = f"plots/full_evaluation-{prefix}-{name}-{x_axis}-{split_param}"
+    suffix = f"plots/{prefix}/full_evaluation-{name}-{x_axis}-{split_param}"
+
+    os.makedirs(os.path.dirname(suffix), exist_ok=True)
 
     csv_out_file = f"{suffix}.csv"
     os.makedirs(os.path.dirname(csv_out_file), exist_ok=True)
