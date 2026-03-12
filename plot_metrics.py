@@ -45,6 +45,18 @@ regexes = [
         cast=lambda x: "Eval Pose Opt" if x == "evalopt" else "",
         default="Def Eval Poses",
     ),
+    Param(
+        name="depth_loss",
+        pattern=r"_(depth)",
+        cast=lambda x: "Depth Loss" if x == "depth" else "",
+        default="No Depth Loss",
+    ),
+    Param(
+        name="depth_conf",
+        pattern=r"_(conf)",
+        cast=lambda x: "Depth Confidence" if x == "conf" else "",
+        default="No Depth Confidence",
+    ),
     Param(name="choice", pattern=r"(vggt|colmap)_outputs", cast=str),
 ]
 
@@ -98,7 +110,7 @@ def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] |
                     if source_name == "gsplat":
                         folder_name = file_path.split("/")[-3]
 
-                    params = extract_params(folder_name)
+                    params = extract_params(file_path)
                     if params["num_images"] is None:
                         continue
 
@@ -437,11 +449,11 @@ def main():
     )
     parser.add_argument("--filter", default=None, help="Filter string, e.g. 'num_images=10,20;conf_thres_value=0.5'")
     args = parser.parse_args()
-    plot_graph(args.name, args.x_axis, args.split_param, args.filter)
+    plot_graph(args.name, "default", args.x_axis, args.split_param, args.filter)
 
 
 def plot_graph(
-    name: str, x_axis: str, split_param: str | None = None, filter: str | None = None, folders: list[str] | None = None
+    name: str, prefix: str, x_axis: str, split_param: str | None = None, filter: str | None = None, folders: list[str] | None = None
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt"], folders=folders)
 
@@ -471,15 +483,15 @@ def plot_graph(
     valid_split_cols = []
     if split_param:
         split_cols = [p.strip() for p in split_param.split(",") if p.strip()]
-        valid_split_cols = [c for c in split_cols if c in df.columns]
+        valid_split_cols = [c for c in split_cols if c in df.columns and c != "choice"]
         print(f"Invalid split cols: {set(split_cols) - set(valid_split_cols)}")
 
     if valid_split_cols:
         split_val_series = df[valid_split_cols[0]].fillna("").astype(str)
         for col in valid_split_cols[1:]:
-            split_val_series = split_val_series + "-" + df[col].fillna("").astype(str)
+            split_val_series = split_val_series + " | " + df[col].fillna("").astype(str)
 
-        df["plot_series"] = df["method"] + "-" + split_val_series
+        df["plot_series"] = df["method"] + " | " + split_val_series
         unique_splits = sorted(split_val_series.unique())
     else:
         df["plot_series"] = df["method"]
@@ -529,7 +541,7 @@ def plot_graph(
         method = "colmap" if "colmap" in series else "vggt"
 
         if valid_split_cols:
-            val_str = series.replace(f"{method}-", "")
+            val_str = series.replace(f"{method} | ", "")
             original_val = next((v for v in unique_splits if str(v) == val_str), None)
             color_map[series] = val_to_color.get(original_val, "#333333")
         else:
@@ -605,7 +617,7 @@ def plot_graph(
         if handles:
             axes[i].legend(handles=handles, labels=labels, title="Series", fontsize=10)
 
-    suffix = f"plots/full_evaluation-{name}-{x_axis}-{split_param}"
+    suffix = f"plots/full_evaluation-{prefix}-{name}-{x_axis}-{split_param}"
 
     csv_out_file = f"{suffix}.csv"
     os.makedirs(os.path.dirname(csv_out_file), exist_ok=True)
