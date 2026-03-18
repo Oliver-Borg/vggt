@@ -74,6 +74,36 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
     return params
 
 
+def apply_presentation_style():
+    """High-visibility style with a massive, clear legend."""
+    sns.set_theme(style="whitegrid")
+    
+    sns.set_context("talk", rc={
+        "axes.titlesize": 24,
+        "axes.labelsize": 20,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 22,
+        "legend.title_fontsize": 30,
+        "lines.linewidth": 2,
+        "lines.markersize": 8,
+    })
+    
+    plt.rcParams.update({
+        "font.weight": "normal",
+        "axes.titleweight": "bold",
+        "figure.facecolor": "white",
+        "legend.frameon": True,
+        "legend.framealpha": 1.0,
+        "legend.edgecolor": "0.5",
+        "legend.fancybox": True,
+        "savefig.dpi": 300
+    })
+
+
+apply_presentation_style()
+
+
 def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] | None = None) -> pd.DataFrame:
     """
     Loads both SfM and gsplat metrics for all methods into a single DataFrame.
@@ -234,7 +264,7 @@ def plot_metric(
         errorbar=("pi", 100),
         err_style="bars",
         ax=ax,
-        err_kws={"capsize": 4},
+        err_kws={"capsize": 6},
     )
 
     if hranges:
@@ -254,22 +284,21 @@ def plot_metric(
         for series_name, y_val in hlines.items():
             if pd.notna(y_val):
                 line_color = colors.get(series_name, "gray")
-
                 ax.axhline(
                     y=y_val,
                     color=line_color,
                     linestyle="-",
                     alpha=0.8,
                     label=series_name,
-                    linewidth=1.2,
+                    linewidth=2.0,
                 )
 
-    ax.set_title(title, fontweight="bold", fontsize=14)
-    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
 
     label_col = original_x_col if original_x_col else x
     xlabel = " ".join(label_col.split("_")).title()
-    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_xlabel(xlabel)
 
     if label_col in ["num_points"]:
         ax.set_xscale("log")
@@ -390,7 +419,7 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
             full_x = np.concatenate(curve_xs)
             full_y = np.concatenate(curve_ys)
 
-            ax.plot(full_x, full_y, color=color, alpha=0.4, linewidth=1.0)
+            ax.plot(full_x, full_y, color=color, alpha=0.4, linewidth=1.5)
 
         # Add Colorbar
         m_min, m_max, _ = range_map[metric]
@@ -398,11 +427,11 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, pad=0.01, aspect=30)
-        cbar.set_label(metric.upper(), fontsize=10, fontweight="bold")
+        cbar.set_label(metric.upper(), fontweight="bold")
 
         # Decorate Axes
         ax.set_xticks(range(len(cols)))
-        ax.set_xticklabels(cols, rotation=30, ha="right", fontsize=10)
+        ax.set_xticklabels(cols, rotation=30, ha="right")
         ax.set_yticks([])
         # Expand limits slightly to accommodate jitter
         ax.set_ylim(-0.15, 1.15)
@@ -415,8 +444,8 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
                 info = range_map[col]
                 if info[-1] == "num":
                     mn, mx, _ = info
-                    ax.text(i, -0.05, f"{mn:.3g}", ha="center", va="top", fontsize=9, fontweight="bold")
-                    ax.text(i, 1.05, f"{mx:.3g}", ha="center", va="bottom", fontsize=9, fontweight="bold")
+                    ax.text(i, -0.05, f"{mn:.3g}", ha="center", va="top", fontweight="bold")
+                    ax.text(i, 1.05, f"{mx:.3g}", ha="center", va="bottom", fontweight="bold")
                 else:
                     uniques, _ = info
                     if len(uniques) <= 10:
@@ -428,14 +457,13 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
                                 str(u),
                                 ha="center",
                                 va="center",
-                                fontsize=8,
                                 bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1),
                             )
                     else:
-                        ax.text(i, -0.05, str(uniques[0]), ha="center", va="top", fontsize=9)
-                        ax.text(i, 1.05, str(uniques[-1]), ha="center", va="bottom", fontsize=9)
+                        ax.text(i, -0.05, str(uniques[0]), ha="center", va="top")
+                        ax.text(i, 1.05, str(uniques[-1]), ha="center", va="bottom")
 
-        ax.set_title(f"Parallel Coordinate Plot: Parameters vs {metric.upper()}", fontsize=14, fontweight="bold")
+        ax.set_title(f"Parallel Coordinate Plot: Parameters vs {metric.upper()}")
 
     plt.tight_layout()
     plt.savefig(out_file, dpi=300)
@@ -621,7 +649,7 @@ def plot_graph(
         handles, labels = axes[i].get_legend_handles_labels()
         processed_labels = [label.replace("colmap", "COLMAP").replace("vggt", "VGGT") for label in labels]
         if handles:
-            axes[i].legend(handles=handles, labels=processed_labels, title="Series", fontsize=10)
+            axes[i].legend(handles=handles, labels=processed_labels, markerscale=1.5)
 
     suffix = f"plots/{prefix}/full_evaluation-{name}-{x_axis}-{split_param}"
 
