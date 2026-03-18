@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Tuple
 import numpy as np
+import shutil
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -58,6 +59,7 @@ regexes = [
         default="No Depth Confidence",
     ),
     Param(name="choice", pattern=r"(vggt|colmap)_outputs", cast=str),
+    Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
 ]
 
 
@@ -568,7 +570,7 @@ def plot_graph(
         # {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓"},
         # {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
         {"y": "psnr", "title": "Quality ($PSNR$)", "ylabel": "dB ↑"},
-        # {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
+        {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
     ]
 
     fig, axes = plt.subplots(1, len(metrics_config), figsize=(8 * len(metrics_config), 4.5))
@@ -638,6 +640,18 @@ def plot_graph(
 
     pcp_out_file = f"{suffix}_pcp.png"
     plot_pcp(df, pcp_out_file, color_map)
+
+    render_out_base = Path(suffix + "_renders")
+    for file_path in df["file_path"].unique():
+        p = Path(file_path)
+        if "stats" in p.parts and "val_step" in p.name:
+            render_src_dir = p.parents[1] / "renders"
+            if render_src_dir.exists():
+                folder_name = p.parents[1].name
+                dest_dir = render_out_base / folder_name
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                for render_file in render_src_dir.glob(f"{p.stem}_*.png"):
+                    shutil.copy2(render_file, dest_dir / render_file.name)
 
     plt.show()
 
