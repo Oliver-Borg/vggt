@@ -26,6 +26,8 @@ import trimesh
 import pycolmap
 import matplotlib.pyplot as plt
 
+import pyceres
+
 
 from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images_square
@@ -194,7 +196,7 @@ def run_vggt(
     seed: int = 42,
     use_ba: bool = False,
     max_reproj_error: float = 8.0,
-    shared_camera: bool = False,
+    shared_camera: bool = True,
     camera_type: str = "SIMPLE_PINHOLE",
     vis_thresh: float = 0.2,
     query_frame_num: int = 8,
@@ -350,15 +352,29 @@ def run_vggt(
             shared_camera=shared_camera,
             camera_type=camera_type,
             points_rgb=points_rgb,
+            min_inlier_per_frame=16,
         )
 
         if reconstruction is None:
             raise ValueError("No reconstruction can be built with BA")
 
         # Bundle Adjustment
-        ba_options = pycolmap.BundleAdjustmentOptions()
-        pycolmap.bundle_adjustment(reconstruction, ba_options)
+        ba_options = pycolmap.BundleAdjustmentOptions(
+            loss_function_scale=1.0,
+            loss_function_type=pycolmap.LossFunctionType.CAUCHY,  # TRIVIAL, SOFT_L1, CAUCHY
+            refine_extra_params=True,
+            refine_extrinsics=True,
+            refine_focal_length=True,
+            refine_principal_point=False,
+        )
+        # ba_options.solver_options.max_num_iterations = 3000
+        ba_options.solver_options.minimizer_progress_to_stdout = True
+        examples = []
+        for _ in range(1):
+            pycolmap.bundle_adjustment(reconstruction, ba_options)
+            examples.append(str([cam.params for cam in dict(reconstruction.cameras).values()][0]))
 
+        print("\n".join(examples))
         reconstruction_resolution = img_load_resolution
     else:
         conf_thres_value = conf_thres_value
@@ -417,6 +433,7 @@ def run_vggt(
         base_image_path_list,
         original_coords.cpu().numpy(),
         img_size=reconstruction_resolution,
+        camera_type=camera_type,
         shift_point2d_to_original_res=True,
         shared_camera=shared_camera,
     )
@@ -452,7 +469,7 @@ def run_vggt(
 
 
 def rename_colmap_recons_and_rescale_camera(
-    reconstruction, image_paths, original_coords, img_size, shift_point2d_to_original_res=False, shared_camera=False
+    reconstruction, image_paths, original_coords, img_size, camera_type, shift_point2d_to_original_res=False, shared_camera=False
 ):
     rescale_camera = True
 
@@ -469,10 +486,15 @@ def rename_colmap_recons_and_rescale_camera(
 
             real_image_size = original_coords[pyimageid - 1, -2:]
             resize_ratio = max(real_image_size) / img_size
-            pred_params = pred_params * resize_ratio
-            real_pp = real_image_size / 2
-            pred_params[-2:] = real_pp  # center of the image
 
+            if camera_type == "SIMPLE_PINHOLE":
+                pred_params[:3] *= resize_ratio
+                real_pp = real_image_size / 2
+                pred_params[-2:] = real_pp  # center of the image
+            elif camera_type == "SIMPLE_RADIAL":
+                pred_params[:3] *= resize_ratio
+                real_pp = real_image_size / 2
+                pred_params[1:3] = real_pp  # center of the image
             pycamera.params = pred_params
             pycamera.width = real_image_size[0]
             pycamera.height = real_image_size[1]

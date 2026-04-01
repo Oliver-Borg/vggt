@@ -18,6 +18,8 @@ from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
 
 IMAGE_MODE = Literal["shuffle", "distributed"]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
+CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
+
 
 
 class GPUMonitor(threading.Thread):
@@ -144,12 +146,14 @@ def run_vggt_pipeline(
     conf_thres_value: float = 0.0,
     sampling_mode: SAMPLING_MODE = "random",
     num_points: int = 100000,
+    camera_type: CAMERA_TYPE = "SIMPLE_PINHOLE",
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
         scene_dir=base_out,
         num_profiling_runs=0,
         use_ba=sampling_mode == "ba",
+        camera_type=camera_type,
         conf_thres_value=conf_thres_value,
         sampling_mode=sampling_mode,
         num_points=num_points,
@@ -222,6 +226,7 @@ def main(
     force: bool,
     sampling_mode: SAMPLING_MODE,
     image_mode: IMAGE_MODE,
+    camera_type: CAMERA_TYPE,
     num_points: int = 100000,
 ):
     name = name.strip("/")
@@ -235,6 +240,9 @@ def main(
         if sampling_mode != "ba":
             extra_parts.append(f"c{conf_thres_value}")
             extra_parts.append(f"p{num_points}")
+        else:
+            extra_parts.append(camera_type.lower().replace("simple_", "m"))
+
         extra_parts.append(sampling_mode)
 
     extra_parts.append(image_mode)
@@ -269,7 +277,7 @@ def main(
     if choice == "colmap":
         profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=num_images < 50)
     elif choice == "vggt":
-        profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode, num_points)
+        profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode, num_points, camera_type)
     else:
         raise ValueError("Invalid choice")
 
@@ -308,6 +316,14 @@ if __name__ == "__main__":
         help="Image selection mode",
     )
     parser.add_argument("--num_points", type=int, default=100000, help="Number of points to use for reconstruction")
+    parser.add_argument(
+        "--camera_type",
+        type=str,
+        default="SIMPLE_PINHOLE",
+        choices=list(get_args(CAMERA_TYPE)),
+        help="Camera type for reconstruction",
+    )
+
 
     args = parser.parse_args()
     main(
@@ -320,5 +336,6 @@ if __name__ == "__main__":
         force=args.force,
         sampling_mode=args.sampling_mode,
         image_mode=args.image_mode,
+        camera_type=args.camera_type,
         num_points=args.num_points,
     )

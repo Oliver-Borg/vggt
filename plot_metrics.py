@@ -101,7 +101,7 @@ def apply_presentation_style():
     })
 
 
-apply_presentation_style()
+# apply_presentation_style()
 
 
 def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] | None = None) -> pd.DataFrame:
