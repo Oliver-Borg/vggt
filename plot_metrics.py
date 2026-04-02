@@ -500,6 +500,7 @@ def plot_graph(
     filter: str | None = None,
     folders: list[str] | None = None,
     create_pcp: bool = True,
+    copy_images: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt"], folders=folders)
 
@@ -688,6 +689,8 @@ def plot_graph(
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():
+        if not copy_images:
+            break
         p = Path(file_path)
         if "stats" in p.parts and "val_step" in p.name:
             render_src_dir = p.parents[1] / "renders"
