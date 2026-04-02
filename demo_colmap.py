@@ -264,7 +264,7 @@ def run_vggt(
     # Load images and original coordinates
     # Load Image in 1024, while running VGGT with 518
     vggt_fixed_resolution = 518
-    img_load_resolution = 518
+    img_load_resolution = 518  # TODO try change this back to 1024
 
     images, masks, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
     images = images.to(device)

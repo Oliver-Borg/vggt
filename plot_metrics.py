@@ -6,13 +6,16 @@ import os
 from pathlib import Path
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Literal, Tuple
 import numpy as np
 import shutil
+import warnings
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*Calling float on a single element Series.*")
 
 
 @dataclass
@@ -58,8 +61,10 @@ regexes = [
         cast=lambda x: "Depth Confidence" if x == "conf" else "",
         default="No Depth Confidence",
     ),
-    Param(name="choice", pattern=r"(vggt|colmap)_outputs", cast=str),
+    Param(name="choice", pattern=r"(vggt)|(colmap)|(gt)_outputs", cast=str),
     Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
+    Param(name="copy_mode", pattern=r"_(crop)|(tiles)|(square)", cast=str, default=None),
+    Param(name="val_step", pattern=r"val_step(\d+)", cast=int, default=None),
 ]
 
 
@@ -77,28 +82,33 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
 def apply_presentation_style():
     """High-visibility style with a massive, clear legend."""
     sns.set_theme(style="whitegrid")
-    
-    sns.set_context("talk", rc={
-        "axes.titlesize": 24,
-        "axes.labelsize": 20,
-        "xtick.labelsize": 16,
-        "ytick.labelsize": 16,
-        "legend.fontsize": 22,
-        "legend.title_fontsize": 30,
-        "lines.linewidth": 2,
-        "lines.markersize": 8,
-    })
-    
-    plt.rcParams.update({
-        "font.weight": "normal",
-        "axes.titleweight": "bold",
-        "figure.facecolor": "white",
-        "legend.frameon": True,
-        "legend.framealpha": 1.0,
-        "legend.edgecolor": "0.5",
-        "legend.fancybox": True,
-        "savefig.dpi": 300
-    })
+
+    sns.set_context(
+        "talk",
+        rc={
+            "axes.titlesize": 24,
+            "axes.labelsize": 20,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
+            "legend.fontsize": 22,
+            "legend.title_fontsize": 30,
+            "lines.linewidth": 2,
+            "lines.markersize": 8,
+        },
+    )
+
+    plt.rcParams.update(
+        {
+            "font.weight": "normal",
+            "axes.titleweight": "bold",
+            "figure.facecolor": "white",
+            "legend.frameon": True,
+            "legend.framealpha": 1.0,
+            "legend.edgecolor": "0.5",
+            "legend.fancybox": True,
+            "savefig.dpi": 300,
+        }
+    )
 
 
 # apply_presentation_style()
@@ -483,7 +493,13 @@ def main():
 
 
 def plot_graph(
-    name: str, prefix: str, x_axis: str, split_param: str | None = None, filter: str | None = None, folders: list[str] | None = None
+    name: str,
+    prefix: str,
+    x_axis: str,
+    split_param: str | None = None,
+    filter: str | None = None,
+    folders: list[str] | None = None,
+    create_pcp: bool = True,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt"], folders=folders)
 
@@ -667,7 +683,8 @@ def plot_graph(
     print("Comprehensive plot saved:", Path(out_file))
 
     pcp_out_file = f"{suffix}_pcp.png"
-    plot_pcp(df, pcp_out_file, color_map)
+    if create_pcp:
+        plot_pcp(df, pcp_out_file, color_map)
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():

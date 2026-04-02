@@ -3,9 +3,9 @@ from pathlib import Path
 
 from combine_clouds import load_point_cloud
 
-def check_sparse_folder(sparse_folder: str) -> bool:
+def check_sparse_folder(sparse_folder: str) -> Path | None:
     # Load the reconstruction from the sparse folder
-    reconstruction = load_point_cloud(Path(sparse_folder))
+    reconstruction, best_path = load_point_cloud(Path(sparse_folder), return_path=True)
     print(reconstruction.summary())
 
     # Check if there are points in the point cloud
@@ -14,7 +14,7 @@ def check_sparse_folder(sparse_folder: str) -> bool:
         print(f"Point cloud contains {num_points} points.")
     else:
         print("Point cloud is empty.")
-        return False
+        return None
 
     # Check if there are cameras in the reconstruction
     num_cameras = len(reconstruction.cameras)
@@ -22,8 +22,8 @@ def check_sparse_folder(sparse_folder: str) -> bool:
         print(f"Reconstruction contains {num_cameras} cameras.")
     else:
         print("No cameras found in the reconstruction.")
-        return False
-    return True
+        return None
+    return best_path
 
 
 def main():

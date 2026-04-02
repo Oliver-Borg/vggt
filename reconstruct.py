@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Literal, TypedDict, get_args
 import torch
+import cv2
 
 from check_sparse import check_sparse_folder
 from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
@@ -19,6 +20,7 @@ from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
 IMAGE_MODE = Literal["shuffle", "distributed"]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
+COPY_MODE = Literal[None, "crop", "square", "tiles"]
 
 
 
@@ -226,6 +228,7 @@ def main(
     force: bool,
     sampling_mode: SAMPLING_MODE,
     image_mode: IMAGE_MODE,
+    copy_mode: COPY_MODE,
     camera_type: CAMERA_TYPE,
     num_points: int = 100000,
 ):
@@ -246,6 +249,9 @@ def main(
         extra_parts.append(sampling_mode)
 
     extra_parts.append(image_mode)
+
+    if copy_mode is not None:
+        extra_parts.append(copy_mode)
 
     # name = f"{name}_s{seed}_c{conf_thres_value}_p{num_points}_{sampling_mode}"
     name = name + "_" + "_".join(extra_parts)
@@ -270,7 +276,23 @@ def main(
 
     print(f"Copying {len(all_images)} images from {Path(input_path)} to {Path(images_path)}...")
     for img in all_images:
-        shutil.copy2(os.path.join(input_path, img), os.path.join(images_path, img))
+        if copy_mode is None:
+            shutil.copy2(os.path.join(input_path, img), os.path.join(images_path, img))
+        elif copy_mode == "crop" or copy_mode == "square":
+            im = cv2.imread(os.path.join(input_path, img))
+            assert im is not None
+            h, w = im.shape[:2]
+            crop_size = min(h, w) if copy_mode == "square" else 518
+            if h > crop_size:
+                im = im[(h - crop_size) // 2: (h + crop_size) // 2]
+            if w > crop_size:
+                im = im[:, (w - crop_size) // 2: (w + crop_size) // 2]
+            cv2.imwrite(os.path.join(images_path, img), im)
+
+        elif copy_mode == "tiles":
+            raise NotImplementedError()
+        else:
+            raise ValueError(f"Unknown copy mode {copy_mode}")
 
     t1 = time.time()
 
@@ -288,7 +310,15 @@ def main(
     print(f"\nPipeline finished. Results saved in: {base_out}")
     print(f"Time: {total_time:.2f}s")
 
-    check_sparse_folder(sparse_path)
+    best_path = check_sparse_folder(sparse_path)
+
+    if best_path is not None and best_path.name != "0" and best_path.name.isnumeric():
+        # Swap best path with path 0
+        first_path = best_path.parent / "0"
+        tmp_path = best_path.parent / "tmp"
+        os.rename(first_path, tmp_path)
+        os.rename(best_path, first_path)
+        os.rename(tmp_path, best_path)
 
 
 if __name__ == "__main__":
@@ -315,6 +345,13 @@ if __name__ == "__main__":
         choices=list(get_args(IMAGE_MODE)),
         help="Image selection mode",
     )
+    parser.add_argument(
+        "--copy_mode",
+        type=str,
+        default=None,
+        choices=list(get_args(COPY_MODE)),
+        help="Image copy mode",
+    )
     parser.add_argument("--num_points", type=int, default=100000, help="Number of points to use for reconstruction")
     parser.add_argument(
         "--camera_type",
@@ -336,6 +373,7 @@ if __name__ == "__main__":
         force=args.force,
         sampling_mode=args.sampling_mode,
         image_mode=args.image_mode,
+        copy_mode=args.copy_mode,
         camera_type=args.camera_type,
         num_points=args.num_points,
     )

@@ -166,11 +166,12 @@ def save_cameras_json(
     print(f"Saved camera parameters to {output_path}")
 
 
-def load_point_cloud(point_source_path: Path) -> pycolmap.Reconstruction:
+def load_point_cloud(point_source_path: Path, return_path: bool = False) -> pycolmap.Reconstruction | tuple[pycolmap.Reconstruction, Path]:
     try:
         if "cameras.bin" not in os.listdir(point_source_path):
             raise ValueError(f"No cameras.bin found in {point_source_path}")
-        return pycolmap.Reconstruction(point_source_path)
+        pcd = pycolmap.Reconstruction(point_source_path)
+        return (pcd, point_source_path) if return_path else pcd
     except Exception as e:
         # We assume a folder is given with 0, 1, 2 etc.
         # In that case we want to find the pcd with the most 3D points
@@ -189,7 +190,7 @@ def load_point_cloud(point_source_path: Path) -> pycolmap.Reconstruction:
 
         if best_pcd is not None:
             print("Best point cloud found:", best_path, "with", len(best_pcd.points3D), "points")
-            return best_pcd
+            return (best_pcd, best_path) if return_path else best_pcd
         else:
             raise ValueError(f"No point cloud found in {point_source_path}")
 
