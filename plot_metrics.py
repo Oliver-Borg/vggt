@@ -114,7 +114,9 @@ def apply_presentation_style():
 # apply_presentation_style()
 
 
-def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[tuple[str, str]] | None = None) -> pd.DataFrame:
+def load_metrics_to_df(
+    scene_name: str, methods: list[str], folders: list[tuple[str, str]] | None = None
+) -> pd.DataFrame:
     """
     Loads both SfM and gsplat metrics for all methods into a single DataFrame.
     """
@@ -130,12 +132,12 @@ def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[tuple[
             _parse_gsplat_json,
             gsplat_folders,
         ],
-        [
-            "gsplat",
-            os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step29999.json"),
-            _parse_gsplat_json,
-            gsplat_folders,
-        ],
+        # [  # TODO Deal with some results having both
+        #     "gsplat",
+        #     os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step29999.json"),
+        #     _parse_gsplat_json,
+        #     gsplat_folders,
+        # ],
         [
             "sfm",
             os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"),
@@ -525,7 +527,7 @@ def main():
 
 
 def plot_metric_combinations(
-    df: pd.DataFrame, out_file: str, color_map: Dict[str, str], marker_map: Dict[str, str]
+    df: pd.DataFrame, out_file: str, color_map: Dict[str, str], marker_map: Dict[str, str], x_axis: str
 ) -> None:
     """
     Plots combinations of metrics (PSNR/LPIPS vs RTE/RRE) as point plots with trend lines.
@@ -542,58 +544,94 @@ def plot_metric_combinations(
         print("Required metrics for combination plots are not available.")
         return
 
-    fig, axes = plt.subplots(1, len(valid_x) * len(valid_y), figsize=(6 * len(valid_y) * len(valid_x), 5))
+    num_plots = len(valid_y) * len(valid_x)
+    fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5))
 
-    # Standardize axes to 2D array for easy iteration
-    if len(valid_y) == 1 and len(valid_x) == 1:
-        axes = np.array([[axes]])
-    elif len(valid_y) == 1:
-        axes = axes[np.newaxis, :]
-    elif len(valid_x) == 1:
-        axes = axes[:, np.newaxis]
+    # Standardize axes to 1D array for easy iteration
+    if num_plots == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+
+    # Add the passed x-axis to the split params for grouping in the combination plot
+    plot_df = df.copy()
+    plot_df["combo_series"] = plot_df["plot_series"] + " | " + x_axis + "=" + plot_df[x_axis].astype(str)
+
+    # Generate a color group that ignores the method (colmap/vggt) to sync colors
+    def get_color_group(combo_str):
+        s = combo_str
+        if s.startswith("colmap | "): return s[9:]
+        if s.startswith("vggt | "): return s[7:]
+        if s.startswith("colmap"): return s.replace("colmap", "base")
+        if s.startswith("vggt"): return s.replace("vggt", "base")
+        return s
+
+    plot_df["color_group"] = plot_df["combo_series"].apply(get_color_group)
+
+    # Generate distinct colors for every unique parameter combination
+    unique_color_groups = sorted(plot_df["color_group"].unique())
+    base_pal = sns.color_palette("husl", n_colors=len(unique_color_groups))
+    group_to_color = dict(zip(unique_color_groups, base_pal))
+
+    combo_color_map = {}
+    combo_marker_map = {}
+    for _, row in plot_df.iterrows():
+        combo_color_map[row["combo_series"]] = group_to_color[row["color_group"]]
+        # Keep the base marker shape to identify the parent series
+        combo_marker_map[row["combo_series"]] = marker_map.get(row["plot_series"], "o")
 
     for i, (y_col, y_label) in enumerate(valid_y):
         for j, (x_col, x_label) in enumerate(valid_x):
-            ax = axes[i * len(valid_x) + j]
+            ax_idx = i * len(valid_x) + j
+            ax = axes[ax_idx]
 
-            plot_df = df.dropna(subset=[x_col, y_col])
+            curr_plot_df = plot_df.dropna(subset=[x_col, y_col])
 
-            if plot_df.empty:
+            if curr_plot_df.empty:
                 ax.text(0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes)
                 continue
 
             # Point plot (scatter)
             sns.scatterplot(
-                data=plot_df,
+                data=curr_plot_df,
                 x=x_col,
                 y=y_col,
-                hue="plot_series",
-                style="plot_series",
-                palette=color_map,
-                markers=marker_map,
+                hue="combo_series",
+                style="combo_series",
+                palette=combo_color_map,
+                markers=combo_marker_map,
                 s=100,
                 alpha=0.8,
                 ax=ax,
             )
 
-            # Trend line
-            sns.regplot(
-                data=plot_df,
-                x=x_col,
-                y=y_col,
-                scatter=False,
-                ax=ax,
-                color="gray",
-                line_kws={"linestyle": "--", "alpha": 0.5},
-            )
+            # Trend lines grouped by the original plot_series
+            for series_name in curr_plot_df["plot_series"].unique():
+                series_data = curr_plot_df[curr_plot_df["plot_series"] == series_name]
+                if len(series_data) > 1:
+                    # Sync trend line color with the points
+                    trend_color = combo_color_map[series_data.iloc[0]["combo_series"]]
+                    sns.regplot(
+                        data=series_data,
+                        x=x_col,
+                        y=y_col,
+                        scatter=False,
+                        ax=ax,
+                        color=trend_color,
+                        line_kws={"linestyle": "--", "alpha": 0.5},
+                    )
 
             ax.set_xlabel(x_label)
             ax.set_ylabel(y_label)
             ax.set_title(f"{y_col.upper()} vs {x_col.upper()}")
             ax.grid(True, which="major", ls="-", alpha=0.15)
 
+            # Keep a legend on the far-right plot
             if ax.get_legend():
-                ax.get_legend().remove()
+                if ax_idx == num_plots - 1:
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.)
+                else:
+                    ax.get_legend().remove()
 
     plt.tight_layout()
     plt.savefig(out_file, dpi=300, bbox_inches="tight")
@@ -634,6 +672,8 @@ def plot_graph(
         if df.empty:
             print("Dataframe is empty after filtering.")
             return
+        
+    # split_param = "val_step" if split_param is None else f"{split_param},val_step"
 
     valid_split_cols = []
     if split_param:
@@ -796,7 +836,7 @@ def plot_graph(
         plot_pcp(df, pcp_out_file, color_map)
 
     combo_out_file = f"{suffix}_combos.png"
-    plot_metric_combinations(df, combo_out_file, color_map, marker_map)
+    plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis)
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():
