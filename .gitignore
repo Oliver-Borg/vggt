@@ -151,6 +151,7 @@ skyseg.onnx
 data/
 colmap_outputs/
 vggt_outputs/
+vggt_outputs_backup/
 test/
 plots/
 stubs/
