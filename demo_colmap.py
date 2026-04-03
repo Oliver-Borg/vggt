@@ -487,6 +487,7 @@ def rename_colmap_recons_and_rescale_camera(
             real_image_size = original_coords[pyimageid - 1, -2:]
             resize_ratio = max(real_image_size) / img_size
 
+            # TODO Check if this SIMPLE_PINHOLE and SIMPLE_RADIAL are correct now
             if camera_type == "SIMPLE_PINHOLE":
                 pred_params[:3] *= resize_ratio
                 real_pp = real_image_size / 2
@@ -495,6 +496,10 @@ def rename_colmap_recons_and_rescale_camera(
                 pred_params[:3] *= resize_ratio
                 real_pp = real_image_size / 2
                 pred_params[1:3] = real_pp  # center of the image
+            else:
+                pred_params = pred_params * resize_ratio
+                real_pp = real_image_size / 2
+                pred_params[-2:] = real_pp  # center of the image
             pycamera.params = pred_params
             pycamera.width = real_image_size[0]
             pycamera.height = real_image_size[1]
