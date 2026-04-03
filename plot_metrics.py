@@ -122,7 +122,7 @@ def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] |
 
     # (source_name, glob_pattern, json_loader_func)
     sources = [
-        ("sfm", "~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json", _parse_sfm_json),
+        ("sfm", os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"), _parse_sfm_json),
         (
             "gsplat",
             os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step6999.json"),
@@ -612,8 +612,8 @@ def plot_graph(
 
     # TODO Make this a parameter for which metrics to use
     metrics_config = [
-        # {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓"},
-        # {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
+        {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓"},
+        {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
         {"y": "psnr", "title": "Quality ($PSNR$)", "ylabel": "dB ↑"},
         {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
     ]
