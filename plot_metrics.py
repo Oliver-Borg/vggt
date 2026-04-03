@@ -114,29 +114,39 @@ def apply_presentation_style():
 # apply_presentation_style()
 
 
-def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] | None = None) -> pd.DataFrame:
+def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[tuple[str, str]] | None = None) -> pd.DataFrame:
     """
     Loads both SfM and gsplat metrics for all methods into a single DataFrame.
     """
-    records = []
+    records: dict[int | tuple[str, str], dict] = {}
+    sfm_folders = [pair[0] for pair in folders] if folders is not None else []
+    gsplat_folders = [pair[1] for pair in folders] if folders is not None else []
 
     # (source_name, glob_pattern, json_loader_func)
     sources = [
-        ("sfm", os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"), _parse_sfm_json),
-        (
+        [
             "gsplat",
             os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step6999.json"),
             _parse_gsplat_json,
-        ),
-        (
+            gsplat_folders,
+        ],
+        [
             "gsplat",
             os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step29999.json"),
             _parse_gsplat_json,
-        ),
+            gsplat_folders,
+        ],
+        [
+            "sfm",
+            os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"),
+            _parse_sfm_json,
+            sfm_folders,
+        ],
     ]
+    i = 0
 
     for method in methods:
-        for source_name, path_template, parser in sources:
+        for source_name, path_template, parser, source_folders in sources:
             pattern = path_template.format(method=method, scene=scene_name)
 
             for file_path in glob.glob(pattern):
@@ -145,12 +155,24 @@ def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] |
                     # We assume folder structure is consistent, getting the folder name relative to the file
                     folder_path = os.path.dirname(file_path)
                     folder_name = os.path.basename(folder_path)
-                    if folders is not None and len(set(folders) & set(Path(file_path).parts)) == 0:
+
+                    folder_overlap: set[str] = set(source_folders) & set(Path(file_path).parts)
+
+                    if folders is not None and len(folder_overlap) == 0:
                         continue
+
+                    source_folder = folder_overlap.pop() if folders is not None else folder_name
+
+                    if folders is not None and source_folder in source_folders:
+                        index = source_folders.index(source_folder)
+                        key = folders[index]
+                    else:
+                        key = (str(i), str(i))
 
                     # For gsplat, the folder is 3 levels up from the json file in the original code logic
                     if source_name == "gsplat":
                         folder_name = file_path.split("/")[-3]
+                        key = (key[0], key[1] + "_" + Path(pattern).name)
 
                     params = extract_params(file_path)
                     if params["num_images"] is None:
@@ -167,15 +189,25 @@ def load_metrics_to_df(scene_name: str, methods: list[str], folders: list[str] |
                     record.update(params)
                     record.update(metrics)
                     record["file_path"] = file_path
-                    records.append(record)
+                    if source_name == "gsplat":
+                        records[key] = record
+                    else:
+                        key1 = (key[0], key[1] + "_val_step6999.json")
+                        key2 = (key[0], key[1] + "_val_step29999.json")
+                        if key1 in records:
+                            records[key1].update(metrics)
+                        if key2 in records:
+                            records[key2].update(metrics)
 
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                     continue
 
-    if not records:
+    records_list = list(records.values())
+
+    if not records_list:
         return pd.DataFrame()
 
-    df = pd.DataFrame(records)
+    df = pd.DataFrame(records_list)
 
     # Merge rows that share the same unique identifiers (method, num_images, seed, etc.)
     # Since SfM and GS metrics come from different files but belong to the same run,
@@ -492,13 +524,89 @@ def main():
     plot_graph(args.name, "default", args.x_axis, args.split_param, args.filter)
 
 
+def plot_metric_combinations(
+    df: pd.DataFrame, out_file: str, color_map: Dict[str, str], marker_map: Dict[str, str]
+) -> None:
+    """
+    Plots combinations of metrics (PSNR/LPIPS vs RTE/RRE) as point plots with trend lines.
+    """
+    x_metrics = [("rre", "Rotation ($RRE$) ↓"), ("rte", "Translation ($RTE$) ↓")]
+    y_metrics = [("psnr", "Quality ($PSNR$) ↑"), ("lpips", "Perceptual ($LPIPS$) ↓")]
+
+    # Ensure metrics exist in the dataframe
+    available_cols = df.columns
+    valid_x = [m for m in x_metrics if m[0] in available_cols]
+    valid_y = [m for m in y_metrics if m[0] in available_cols]
+
+    if not valid_x or not valid_y:
+        print("Required metrics for combination plots are not available.")
+        return
+
+    fig, axes = plt.subplots(1, len(valid_x) * len(valid_y), figsize=(6 * len(valid_y) * len(valid_x), 5))
+
+    # Standardize axes to 2D array for easy iteration
+    if len(valid_y) == 1 and len(valid_x) == 1:
+        axes = np.array([[axes]])
+    elif len(valid_y) == 1:
+        axes = axes[np.newaxis, :]
+    elif len(valid_x) == 1:
+        axes = axes[:, np.newaxis]
+
+    for i, (y_col, y_label) in enumerate(valid_y):
+        for j, (x_col, x_label) in enumerate(valid_x):
+            ax = axes[i * len(valid_x) + j]
+
+            plot_df = df.dropna(subset=[x_col, y_col])
+
+            if plot_df.empty:
+                ax.text(0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes)
+                continue
+
+            # Point plot (scatter)
+            sns.scatterplot(
+                data=plot_df,
+                x=x_col,
+                y=y_col,
+                hue="plot_series",
+                style="plot_series",
+                palette=color_map,
+                markers=marker_map,
+                s=100,
+                alpha=0.8,
+                ax=ax,
+            )
+
+            # Trend line
+            sns.regplot(
+                data=plot_df,
+                x=x_col,
+                y=y_col,
+                scatter=False,
+                ax=ax,
+                color="gray",
+                line_kws={"linestyle": "--", "alpha": 0.5},
+            )
+
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
+            ax.set_title(f"{y_col.upper()} vs {x_col.upper()}")
+            ax.grid(True, which="major", ls="-", alpha=0.15)
+
+            if ax.get_legend():
+                ax.get_legend().remove()
+
+    plt.tight_layout()
+    plt.savefig(out_file, dpi=300, bbox_inches="tight")
+    print("Metric combinations plot saved:", Path(out_file))
+
+
 def plot_graph(
     name: str,
     prefix: str,
     x_axis: str,
     split_param: str | None = None,
     filter: str | None = None,
-    folders: list[str] | None = None,
+    folders: list[tuple[str, str]] | None = None,
     create_pcp: bool = True,
     copy_images: bool = False,
 ):
@@ -686,6 +794,9 @@ def plot_graph(
     pcp_out_file = f"{suffix}_pcp.png"
     if create_pcp:
         plot_pcp(df, pcp_out_file, color_map)
+
+    combo_out_file = f"{suffix}_combos.png"
+    plot_metric_combinations(df, combo_out_file, color_map, marker_map)
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():
