@@ -766,9 +766,11 @@ def plot_graph(
         {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
     ]
 
-    fig, axes = plt.subplots(1, len(metrics_config), figsize=(8 * len(metrics_config), 4.5))
+    fig, axes = plt.subplots(2, len(metrics_config) // 2, figsize=(4 * len(metrics_config), 9))
     if len(metrics_config) == 1:
         axes = [axes]
+
+    axes = axes.flatten() if hasattr(axes, 'flatten') else axes
 
     for ax, config in zip(axes, metrics_config):
         plot_df = df
