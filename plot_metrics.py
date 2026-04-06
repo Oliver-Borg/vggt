@@ -12,6 +12,7 @@ import shutil
 import warnings
 
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as path_effects
 import pandas as pd
 import seaborn as sns
 
@@ -36,6 +37,24 @@ regexes = [
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(
         name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default="Train Eval"
+    ),
+    Param(
+        name="use_gt_extrinsics",
+        pattern=r"_(gtext)",
+        cast=lambda x: "GT Extrinsics" if x == "gtext" else "",
+        default="Train Extrinsics",
+    ),
+    Param(
+        name="use_gt_intrinsics",
+        pattern=r"_(gtint)",
+        cast=lambda x: "GT Intrinsics" if x == "gtint" else "",
+        default="Train Intrinsics",
+    ),
+    Param(
+        name="use_gt_points",
+        pattern=r"_(gtpcd)",
+        cast=lambda x: "GT Points" if x == "gtpcd" else "",
+        default="Train Points",
     ),
     Param(
         name="pose_opt",
@@ -288,28 +307,65 @@ def plot_metric(
 ) -> None:
     """
     Generic plotting function using Seaborn.
-    Plots line with markers and min/max error bars (PI 100).
+    Plots line with markers and min/max error bars (PI 100) or a horizontal bar chart if x is empty.
     Optionally adds horizontal reference lines (hlines) and shaded regions (hranges).
     """
+
     if df.empty or y not in df.columns or df[y].isnull().all():
         ax.text(0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes)
         return
     # df[x] = df[x].fillna(0)
 
-    sns.lineplot(
-        data=df,
-        x=x,
-        y=y,
-        hue=series_col,
-        style=series_col,
-        markers=markers,
-        dashes=dashes,
-        palette=colors,
-        errorbar=("pi", 100),
-        err_style="bars",
-        ax=ax,
-        err_kws={"capsize": 6},
-    )
+    if not x:
+        sns.barplot(
+            data=df,
+            x=y,
+            y=series_col,
+            hue=series_col,
+            palette=colors,
+            errorbar=("pi", 100),
+            capsize=0.1,
+            ax=ax,
+            orient="h",
+            legend=False,
+        )
+        
+        # Calculate a small padding based on the axis limits
+        x_min, x_max = ax.get_xlim()
+        padding = (x_max - x_min) * 0.01
+
+        # Add labels left-aligned but vertically centered inside the bars
+        for patch, tick_label in zip(ax.patches, ax.get_yticklabels()):
+            x_pos = patch.get_x() + padding
+            y_pos = patch.get_y() + patch.get_height() / 2
+            
+            txt = ax.text(
+                x_pos,
+                y_pos,
+                tick_label.get_text(),
+                ha="left",
+                va="center",
+                fontweight="bold"
+            )
+            txt.set_path_effects([path_effects.withStroke(linewidth=2.5, foreground='white')])
+        
+        ax.set_yticks([]) # Hide original y-ticks
+        ax.set_ylabel("") # Remove y-axis label
+    else:
+        sns.lineplot(
+            data=df,
+            x=x,
+            y=y,
+            hue=series_col,
+            style=series_col,
+            markers=markers,
+            dashes=dashes,
+            palette=colors,
+            errorbar=("pi", 100),
+            err_style="bars",
+            ax=ax,
+            err_kws={"capsize": 6},
+        )
 
     if hranges:
         for series_name, (min_val, max_val) in hranges.items():
@@ -338,23 +394,27 @@ def plot_metric(
                 )
 
     ax.set_title(title)
-    ax.set_ylabel(ylabel)
 
-    label_col = original_x_col if original_x_col else x
-    xlabel = " ".join(label_col.split("_")).title()
-    ax.set_xlabel(xlabel)
-
-    if label_col in ["num_points"]:
-        ax.set_xscale("log")
+    if not x:
+        ax.set_xlabel(ylabel)
     else:
-        unique_x = sorted(df[label_col].fillna(5.0).unique().round())
-        ax.set_xticks(unique_x)
-        ax.set_xticklabels([str(n) for n in unique_x])
+        ax.set_ylabel(ylabel)
+        label_col = original_x_col if original_x_col else x
+        xlabel = " ".join(label_col.split("_")).title()
+        ax.set_xlabel(xlabel)
+
+        if label_col in ["num_points"]:
+            ax.set_xscale("log")
+        else:
+            unique_x = sorted(df[label_col].fillna(5.0).unique().round())
+            ax.set_xticks(unique_x)
+            ax.set_xticklabels([str(n) for n in unique_x])
 
     ax.grid(True, which="major", ls="-", alpha=0.15)
 
     # Handle Legend: Remove individual subplot legends, will add global one later or keep on first
-    ax.get_legend().remove()
+    if ax.get_legend():
+        ax.get_legend().remove()
 
 
 def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
@@ -555,15 +615,23 @@ def plot_metric_combinations(
 
     # Add the passed x-axis to the split params for grouping in the combination plot
     plot_df = df.copy()
-    plot_df["combo_series"] = plot_df["plot_series"] + " | " + x_axis + "=" + plot_df[x_axis].astype(str)
+
+    if not x_axis or x_axis not in plot_df.columns:
+        plot_df["combo_series"] = plot_df["plot_series"]
+    else:
+        plot_df["combo_series"] = plot_df["plot_series"] + " | " + x_axis + "=" + plot_df[x_axis].astype(str)
 
     # Generate a color group that ignores the method (colmap/vggt) to sync colors
     def get_color_group(combo_str):
         s = combo_str
-        if s.startswith("colmap | "): return s[9:]
-        if s.startswith("vggt | "): return s[7:]
-        if s.startswith("colmap"): return s.replace("colmap", "base")
-        if s.startswith("vggt"): return s.replace("vggt", "base")
+        if s.startswith("colmap | "):
+            return s[9:]
+        if s.startswith("vggt | "):
+            return s[7:]
+        if s.startswith("colmap"):
+            return s.replace("colmap", "base")
+        if s.startswith("vggt"):
+            return s.replace("vggt", "base")
         return s
 
     plot_df["color_group"] = plot_df["combo_series"].apply(get_color_group)
@@ -629,7 +697,7 @@ def plot_metric_combinations(
             # Keep a legend on the far-right plot
             if ax.get_legend():
                 if ax_idx == num_plots - 1:
-                    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.)
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
                 else:
                     ax.get_legend().remove()
 
@@ -646,6 +714,7 @@ def plot_graph(
     filter: str | None = None,
     folders: list[tuple[str, str]] | None = None,
     create_pcp: bool = True,
+    create_combinations: bool = False,
     copy_images: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt"], folders=folders)
@@ -672,7 +741,7 @@ def plot_graph(
         if df.empty:
             print("Dataframe is empty after filtering.")
             return
-        
+
     # split_param = "val_step" if split_param is None else f"{split_param},val_step"
 
     valid_split_cols = []
@@ -699,26 +768,29 @@ def plot_graph(
 
     centered_indices = {s: i - (num_series - 1) / 2 for s, i in series_indices.items()}
 
-    jitter_col = f"{x_axis}_jitter"
-
-    if x_axis == "num_points":
-        jitter_factor = 0.05
-        df[jitter_col] = df.apply(
-            lambda row: row[x_axis] * (1 + centered_indices.get(row["plot_series"], 0) * jitter_factor), axis=1
-        )
+    if not x_axis:
+        jitter_col = ""
     else:
-        # Determine appropriate jitter width based on minimum distance between X values
-        unique_x = sorted(df[x_axis].dropna().unique())
-        if len(unique_x) > 1:
-            min_dist = min(np.diff(unique_x))
+        jitter_col = f"{x_axis}_jitter"
+
+        if x_axis == "num_points":
+            jitter_factor = 0.05
+            df[jitter_col] = df.apply(
+                lambda row: row[x_axis] * (1 + centered_indices.get(row["plot_series"], 0) * jitter_factor), axis=1
+            )
         else:
-            min_dist = 1.0
+            # Determine appropriate jitter width based on minimum distance between X values
+            unique_x = sorted(df[x_axis].dropna().unique())
+            if len(unique_x) > 1:
+                min_dist = min(np.diff(unique_x))
+            else:
+                min_dist = 1.0
 
-        jitter_width = min_dist * 0.15
+            jitter_width = min_dist * 0.15
 
-        df[jitter_col] = df.apply(
-            lambda row: row[x_axis] + (centered_indices.get(row["plot_series"], 0) * jitter_width), axis=1
-        )
+            df[jitter_col] = df.apply(
+                lambda row: row[x_axis] + (centered_indices.get(row["plot_series"], 0) * jitter_width), axis=1
+            )
 
     style_config = {
         "colmap": {"marker": "o", "dashes": ""},
@@ -770,7 +842,7 @@ def plot_graph(
     if len(metrics_config) == 1:
         axes = [axes]
 
-    axes = axes.flatten() if hasattr(axes, 'flatten') else axes
+    axes = axes.flatten() if hasattr(axes, "flatten") else axes
 
     for ax, config in zip(axes, metrics_config):
         plot_df = df
@@ -838,7 +910,8 @@ def plot_graph(
         plot_pcp(df, pcp_out_file, color_map)
 
     combo_out_file = f"{suffix}_combos.png"
-    plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis)
+    if create_combinations:
+        plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis)
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():
