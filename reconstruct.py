@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import dataclass
 import datetime
 import json
 import os
@@ -14,6 +15,7 @@ import numpy as np
 from scipy.spatial.distance import cdist
 import torch
 import cv2
+import tqdm
 
 from check_sparse import check_sparse_folder
 from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
@@ -23,7 +25,6 @@ IMAGE_MODE = Literal["shuffle", "distributed", "mfps"]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
-
 
 
 class GPUMonitor(threading.Thread):
@@ -201,7 +202,7 @@ def select_indices(indices: np.ndarray, num_images: int, seed: int):
     # Mean Farthest Point Sampling
     # TODO Try out normal Farthest Point Sampling
     n = int(indices.shape[0])
-    angles = indices / (indices.max() - 1) * 2 * np.pi # This assumes points are distributed in a circle
+    angles = indices / (indices.max() - 1) * 2 * np.pi  # This assumes points are distributed in a circle
     # TODO Actually parse GT poses and use the real coordinates
     xs = np.cos(angles)
     ys = np.sin(angles)
@@ -215,7 +216,7 @@ def select_indices(indices: np.ndarray, num_images: int, seed: int):
         selected_mask[np.array(selected_indices)] = True
         selected_coords = coords[selected_mask]
         remaining_coords = coords[~selected_mask]
-        distances = cdist(selected_coords, remaining_coords, metric='euclidean')
+        distances = cdist(selected_coords, remaining_coords, metric="euclidean")
         mean_dists: np.ndarray = distances.mean(axis=0)
         assert mean_dists.shape[0] == remaining_coords.shape[0]
 
@@ -223,15 +224,16 @@ def select_indices(indices: np.ndarray, num_images: int, seed: int):
         next_index = int(remaining_indices[mean_dists.argmax()])
 
         selected_indices.append(next_index)
-    
+
     return indices[np.array(selected_indices)]
+
 
 assert set(select_indices(np.arange(296), 30, 42)).issubset(select_indices(np.arange(296), 40, 42))
 
 
 def get_image_list(all_images: list[str], num_images: int | None, seed: int, image_mode: IMAGE_MODE):
 
-    def sorter(name: str): # TODO This sort may cause issues with lego
+    def sorter(name: str):  # TODO This sort may cause issues with lego
         digits = [c for c in name if c.isdigit()]
         return int("".join(digits)) if digits else 0
 
@@ -251,7 +253,7 @@ def get_image_list(all_images: list[str], num_images: int | None, seed: int, ima
     elif image_mode == "distributed":
         image_subset = []
         for i in range(num_images):
-            k = (int(round(i / num_images *  len(all_images))) + seed - 42) % len(all_images)
+            k = (int(round(i / num_images * len(all_images))) + seed - 42) % len(all_images)
             image_subset.append(all_images[k])
         all_images = image_subset
     elif image_mode == "mfps":
@@ -264,7 +266,7 @@ def get_image_list(all_images: list[str], num_images: int | None, seed: int, ima
     return all_images
 
 
-def main(
+def run_reconstruction(
     name: str,
     input_path: str,
     choice: str,
@@ -323,7 +325,6 @@ def main(
         for image in existing_images:
             os.remove(Path(images_path) / image)
         force = True
-    
 
     if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
         print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
@@ -376,49 +377,24 @@ def main(
         os.rename(tmp_path, best_path)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run COLMAP or VGGT reconstruction pipeline.")
-
-    parser.add_argument("--input", required=True, help="Path to the input images folder")
-    parser.add_argument("--name", required=True, help="Output folder name (e.g., garden_8)")
-    parser.add_argument("--choice", choices=["colmap", "vggt"], required=True, help="Pipeline to run")
-    parser.add_argument("--num_images", type=int, default=None, help="Limit the number of images to process")
-    parser.add_argument("--seed", type=int, default=42, help="Seed for the random shuffling of images")
-    parser.add_argument("--conf_thres_value", type=float, default=5.0, help="Confidence threshold for point cloud")
-    parser.add_argument("--force", action="store_true", help="Force reconstruction")
-    parser.add_argument(
-        "--sampling_mode",
-        type=str,
-        default="random",
-        choices=list(get_args(SAMPLING_MODE)),
-        help="Sampling mode for point cloud subsampling",
-    )
-    parser.add_argument(
-        "--image_mode",
-        type=str,
-        default="distributed",
-        choices=list(get_args(IMAGE_MODE)),
-        help="Image selection mode",
-    )
-    parser.add_argument(
-        "--copy_mode",
-        type=str,
-        default=None,
-        choices=list(get_args(COPY_MODE)),
-        help="Image copy mode",
-    )
-    parser.add_argument("--num_points", type=int, default=100000, help="Number of points to use for reconstruction")
-    parser.add_argument(
-        "--camera_type",
-        type=str,
-        default="SIMPLE_PINHOLE",
-        choices=list(get_args(CAMERA_TYPE)),
-        help="Camera type for reconstruction",
-    )
+@dataclass
+class Args:
+    name: str
+    input: str
+    choice: str
+    num_images: int | None
+    seed: int
+    conf_thres_value: float
+    sampling_mode: SAMPLING_MODE
+    image_mode: IMAGE_MODE
+    camera_type: CAMERA_TYPE
+    num_points: int
+    copy_mode: COPY_MODE = None
+    force: bool = False
 
 
-    args = parser.parse_args()
-    main(
+def main(args: Args):
+    run_reconstruction(
         name=args.name,
         input_path=args.input,
         choice=args.choice,
@@ -432,3 +408,70 @@ if __name__ == "__main__":
         camera_type=args.camera_type,
         num_points=args.num_points,
     )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run COLMAP or VGGT reconstruction pipeline.")
+    subparsers = parser.add_subparsers(dest="command", required=True, help="Execution mode")
+
+    single_parser = subparsers.add_parser("single", help="Run a single reconstruction via CLI arguments")
+    single_parser.add_argument("--input", required=True, help="Path to the input images folder")
+    single_parser.add_argument("--name", required=True, help="Output folder name (e.g., garden_8)")
+    single_parser.add_argument("--choice", choices=["colmap", "vggt"], required=True, help="Pipeline to run")
+    single_parser.add_argument("--num_images", type=int, default=None, help="Limit the number of images to process")
+    single_parser.add_argument("--seed", type=int, default=42, help="Seed for the random shuffling of images")
+    single_parser.add_argument(
+        "--conf_thres_value", type=float, default=5.0, help="Confidence threshold for point cloud"
+    )
+    single_parser.add_argument("--force", action="store_true", help="Force reconstruction")
+    single_parser.add_argument(
+        "--sampling_mode",
+        type=str,
+        default="random",
+        choices=list(get_args(SAMPLING_MODE)),
+        help="Sampling mode for point cloud subsampling",
+    )
+    single_parser.add_argument(
+        "--image_mode",
+        type=str,
+        default="distributed",
+        choices=list(get_args(IMAGE_MODE)),
+        help="Image selection mode",
+    )
+    single_parser.add_argument(
+        "--copy_mode",
+        type=str,
+        default=None,
+        choices=list(get_args(COPY_MODE)),
+        help="Image copy mode",
+    )
+    single_parser.add_argument(
+        "--num_points", type=int, default=100000, help="Number of points to use for reconstruction"
+    )
+    single_parser.add_argument(
+        "--camera_type",
+        type=str,
+        default="SIMPLE_PINHOLE",
+        choices=list(get_args(CAMERA_TYPE)),
+        help="Camera type for reconstruction",
+    )
+
+    batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
+    batch_parser.add_argument(
+        "--config_path", required=True, help="Path to a config file containing a list of dictionaries"
+    )
+
+    parsed_args = parser.parse_args()
+
+    if parsed_args.command == "single":
+        args_dict = vars(parsed_args)
+        args_dict.pop("command")
+        main(Args(**args_dict))
+
+    elif parsed_args.command == "batch":
+        with open(parsed_args.config_path, "r") as f:
+            configs = json.load(f)
+
+        for config_dict in tqdm.tqdm(configs):
+            run_args = Args(**config_dict)
+            main(run_args)

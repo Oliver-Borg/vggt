@@ -190,6 +190,22 @@ def save_depths(path: str, depths: np.ndarray, depth_confs: np.ndarray, camera_n
         np.save(os.path.join(path, "depths", f"depth_conf_{camera_name}.npy"), depth_conf)
 
 
+model_cache = {}
+
+def load_model() -> VGGT:
+    model_key = "vggt"
+    if model_key in model_cache:
+        return model_cache[model_key]
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = VGGT()
+    _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+    model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
+    model.eval()
+    model = model.to(device)
+    model_cache[model_key] = model
+    return model
+
+
 @profile
 def run_vggt(
     scene_dir: str,
@@ -206,6 +222,7 @@ def run_vggt(
     num_profiling_runs: int = 0,
     sampling_mode: SAMPLING_MODE = "random",
     num_points: int = 100000,
+    model: VGGT | None = None,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -244,11 +261,8 @@ def run_vggt(
 
     # Run VGGT for camera and depth estimation
     model_load_t1 = time.time()
-    model = VGGT()
-    _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-    model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
-    model.eval()
-    model = model.to(device)
+    if model is None:
+        model = load_model()
     model_load_t2 = time.time()
     model_alloc, model_res = model_vram_mb = get_gpu_stats()
     print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
