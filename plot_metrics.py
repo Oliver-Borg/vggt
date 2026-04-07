@@ -145,18 +145,13 @@ def load_metrics_to_df(
 
     # (source_name, glob_pattern, json_loader_func)
     sources = [
-        [
+        [# TODO Deal with some results having both
             "gsplat",
-            os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step6999.json"),
+            os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i) + ".json"),
             _parse_gsplat_json,
             gsplat_folders,
-        ],
-        # [  # TODO Deal with some results having both
-        #     "gsplat",
-        #     os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step29999.json"),
-        #     _parse_gsplat_json,
-        #     gsplat_folders,
-        # ],
+        ] for i in [6999, 14999, 29999]
+    ] + [
         [
             "sfm",
             os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"),
