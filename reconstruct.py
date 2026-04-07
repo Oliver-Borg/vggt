@@ -197,11 +197,14 @@ def save_timing(
 
 def get_image_list(all_images: list[str], num_images: int | None, seed: int, image_mode: IMAGE_MODE):
 
-    def sorter(name: str):
+    def sorter(name: str): # TODO This sort may cause issues with lego
         digits = [c for c in name if c.isdigit()]
         return int("".join(digits)) if digits else 0
 
-    all_images.sort(key=sorter)
+    all_images.sort() 
+
+    # This means there shouldn't ever be any overlap between these images and evaluation set
+    all_images = [im for i, im in enumerate(all_images) if i % 8 != 0]
 
     if not num_images:
         return all_images
@@ -260,10 +263,6 @@ def main(
     images_path = os.path.join(base_out, "images")
     db_path = os.path.join(base_out, "database.db")
 
-    if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
-        print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
-        return
-
     os.makedirs(sparse_path, exist_ok=True)
     os.makedirs(images_path, exist_ok=True)
 
@@ -273,6 +272,19 @@ def main(
     all_images = get_image_list(all_images, num_images, seed, image_mode)
 
     num_images = len(all_images)
+
+    existing_images = os.listdir(images_path)
+
+    if len(set(all_images) & set(existing_images)) != num_images:
+        print("Invalid images found in directory. Forcing reconstruction.")
+        for image in existing_images:
+            os.remove(Path(images_path) / image)
+        force = True
+    
+
+    if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
+        print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
+        return
 
     print(f"Copying {len(all_images)} images from {Path(input_path)} to {Path(images_path)}...")
     for img in all_images:
