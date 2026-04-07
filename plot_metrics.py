@@ -33,7 +33,7 @@ regexes = [
     Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
     Param(name="num_points", pattern=r"_p(\d+)", cast=int),
     Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
-    Param(name="image_mode", pattern=r"_(shuffle)|(distributed)", cast=str, default="shuffle"),
+    Param(name="image_mode", pattern=r"_(shuffle)|(distributed)|(mfps)", cast=str, default="shuffle"),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(
         name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default="Train Eval"
@@ -245,14 +245,16 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float]:
 
 
 def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float | int | None]:
-    """Extracts PSNR and LPIPS from gsplat json."""
+    """Extracts PSNR, LPIPS and SSIM from gsplat json."""
     parsed_data = {
         "psnr": data.get("psnr"),
         "lpips": data.get("lpips"),
+        "ssim": data.get("ssim"),
+        "num_GS": data.get("num_GS"),
         "val_step": int(filename.split("val_step")[-1].split(".json")[0]),
     }
     if "num_points" in data:
-        parsed_data["num_points"] = round(int(data["num_points"]), -3)
+        parsed_data["real_num_points"] = int(data["num_points"])
     return parsed_data
 
 
@@ -418,7 +420,7 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
     Uses smooth curves and adds jitter to y-positions to visualize density.
     """
     params = [r.name for r in regexes if r.name in df.columns]
-    metrics = ["psnr", "lpips"]
+    metrics = ["psnr", "lpips", "ssim"]
 
     # Filter metrics present in DF
     metrics = [m for m in metrics if m in df.columns]
@@ -588,7 +590,7 @@ def plot_metric_combinations(
     Plots combinations of metrics (PSNR/LPIPS vs RTE/RRE) as point plots with trend lines.
     """
     x_metrics = [("rre", "Rotation ($RRE$) ↓"), ("rte", "Translation ($RTE$) ↓")]
-    y_metrics = [("psnr", "Quality ($PSNR$) ↑"), ("lpips", "Perceptual ($LPIPS$) ↓")]
+    y_metrics = [("psnr", "Quality ($PSNR$) ↑"), ("lpips", "Perceptual ($LPIPS$) ↓"), ("ssim", "Perceptual ($SSIM$) ↑")]
 
     # Ensure metrics exist in the dataframe
     available_cols = df.columns
@@ -831,9 +833,11 @@ def plot_graph(
         {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
         {"y": "psnr", "title": "Quality ($PSNR$)", "ylabel": "dB ↑"},
         {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
+        {"y": "ssim", "title": "Perceptual ($SSIM$)", "ylabel": "Score ↑"},
+        {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
     ]
 
-    fig, axes = plt.subplots(2, len(metrics_config) // 2, figsize=(4 * len(metrics_config), 9))
+    fig, axes = plt.subplots(len(metrics_config) // 3, 3, figsize=(9 * len(metrics_config) // 3, 9))
     if len(metrics_config) == 1:
         axes = [axes]
 

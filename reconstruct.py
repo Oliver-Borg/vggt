@@ -10,6 +10,8 @@ import subprocess
 import threading
 import time
 from typing import Literal, TypedDict, get_args
+import numpy as np
+from scipy.spatial.distance import cdist
 import torch
 import cv2
 
@@ -17,7 +19,7 @@ from check_sparse import check_sparse_folder
 from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
 
 
-IMAGE_MODE = Literal["shuffle", "distributed"]
+IMAGE_MODE = Literal["shuffle", "distributed", "mfps"]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
@@ -195,16 +197,50 @@ def save_timing(
         json.dump(stat, f, indent=4)
 
 
+def select_indices(indices: np.ndarray, num_images: int, seed: int):
+    # Mean Farthest Point Sampling
+    # TODO Try out normal Farthest Point Sampling
+    n = int(indices.shape[0])
+    angles = indices / (indices.max() - 1) * 2 * np.pi # This assumes points are distributed in a circle
+    # TODO Actually parse GT poses and use the real coordinates
+    xs = np.cos(angles)
+    ys = np.sin(angles)
+    coords = np.stack([xs, ys], axis=1)  # n, 2
+
+    selected_indices = [seed % n]  # These are the indices of the indices
+    all_indices = np.arange(n)
+
+    while len(selected_indices) < num_images:
+        selected_mask = np.zeros(n, dtype=bool)
+        selected_mask[np.array(selected_indices)] = True
+        selected_coords = coords[selected_mask]
+        remaining_coords = coords[~selected_mask]
+        distances = cdist(selected_coords, remaining_coords, metric='euclidean')
+        mean_dists: np.ndarray = distances.mean(axis=0)
+        assert mean_dists.shape[0] == remaining_coords.shape[0]
+
+        remaining_indices = all_indices[~selected_mask]
+        next_index = int(remaining_indices[mean_dists.argmax()])
+
+        selected_indices.append(next_index)
+    
+    return indices[np.array(selected_indices)]
+
+assert set(select_indices(np.arange(296), 30, 42)).issubset(select_indices(np.arange(296), 40, 42))
+
+
 def get_image_list(all_images: list[str], num_images: int | None, seed: int, image_mode: IMAGE_MODE):
 
     def sorter(name: str): # TODO This sort may cause issues with lego
         digits = [c for c in name if c.isdigit()]
         return int("".join(digits)) if digits else 0
 
-    all_images.sort() 
+    all_images.sort()
 
     # This means there shouldn't ever be any overlap between these images and evaluation set
     all_images = [im for i, im in enumerate(all_images) if i % 8 != 0]
+
+    indices = np.arange(len(all_images))
 
     if not num_images:
         return all_images
@@ -218,6 +254,13 @@ def get_image_list(all_images: list[str], num_images: int | None, seed: int, ima
             k = (int(round(i / num_images *  len(all_images))) + seed - 42) % len(all_images)
             image_subset.append(all_images[k])
         all_images = image_subset
+    elif image_mode == "mfps":
+        selected_indices = select_indices(indices, num_images, seed)
+        image_subset = []
+        for i in selected_indices:
+            image_subset.append(all_images[i])
+        all_images = image_subset
+
     return all_images
 
 
