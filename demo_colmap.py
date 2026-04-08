@@ -270,7 +270,7 @@ def run_vggt(
     image_load_t1 = time.time()
     # Get image paths and preprocess them
     image_dir = os.path.join(scene_dir, "images")
-    image_path_list = glob.glob(os.path.join(image_dir, "*"))
+    image_path_list = sorted(glob.glob(os.path.join(image_dir, "*")))
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
     base_image_path_list = [os.path.basename(path) for path in image_path_list]
