@@ -487,4 +487,8 @@ if __name__ == "__main__":
 
         for config_dict in tqdm.tqdm(configs):
             run_args = Args(**config_dict)
-            main(run_args)
+            try:
+                main(run_args)
+            except Exception as e:
+                print(e)
+                continue
