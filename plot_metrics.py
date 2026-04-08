@@ -84,6 +84,7 @@ regexes = [
     Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
     Param(name="copy_mode", pattern=r"_(crop)|(tiles)|(square)", cast=str, default=None),
     Param(name="val_step", pattern=r"val_step(\d+)", cast=int, default=None),
+    Param(name="colmap_mode", pattern=r"_(default)|(relaxed)", cast=str, default=None),
 ]
 
 
@@ -145,12 +146,15 @@ def load_metrics_to_df(
 
     # (source_name, glob_pattern, json_loader_func)
     sources = [
-        [# TODO Deal with some results having both
+        [  # TODO Deal with some results having both
             "gsplat",
-            os.path.expanduser("~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i) + ".json"),
+            os.path.expanduser(
+                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i) + ".json"
+            ),
             _parse_gsplat_json,
             gsplat_folders,
-        ] for i in [6999, 14999, 29999]
+        ]
+        for i in [6999, 14999, 29999]
     ] + [
         [
             "sfm",
@@ -209,11 +213,23 @@ def load_metrics_to_df(
                         records[key] = record
                     else:
                         key1 = (key[0], key[1] + "_val_step6999.json")
-                        key2 = (key[0], key[1] + "_val_step29999.json")
+                        key2 = (key[0], key[1] + "_val_step14999.json")
+                        key3 = (key[0], key[1] + "_val_step29999.json")
+
+                        updated = False
                         if key1 in records:
                             records[key1].update(metrics)
+                            updated = True
                         if key2 in records:
                             records[key2].update(metrics)
+                            updated = True
+                        if key3 in records:
+                            records[key3].update(metrics)
+                            updated = True
+
+                        # If no corresponding gsplat record exists, save sfm as a standalone record
+                        if not updated:
+                            records[("sfm", file_path)] = record
 
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                     continue
@@ -326,7 +342,7 @@ def plot_metric(
             orient="h",
             legend=False,
         )
-        
+
         # Calculate a small padding based on the axis limits
         x_min, x_max = ax.get_xlim()
         padding = (x_max - x_min) * 0.01
@@ -335,19 +351,12 @@ def plot_metric(
         for patch, tick_label in zip(ax.patches, ax.get_yticklabels()):
             x_pos = patch.get_x() + padding
             y_pos = patch.get_y() + patch.get_height() / 2
-            
-            txt = ax.text(
-                x_pos,
-                y_pos,
-                tick_label.get_text(),
-                ha="left",
-                va="center",
-                fontweight="bold"
-            )
-            txt.set_path_effects([path_effects.withStroke(linewidth=2.5, foreground='white')])
-        
-        ax.set_yticks([]) # Hide original y-ticks
-        ax.set_ylabel("") # Remove y-axis label
+
+            txt = ax.text(x_pos, y_pos, tick_label.get_text(), ha="left", va="center", fontweight="bold")
+            txt.set_path_effects([path_effects.withStroke(linewidth=2.5, foreground="white")])
+
+        ax.set_yticks([])  # Hide original y-ticks
+        ax.set_ylabel("")  # Remove y-axis label
     else:
         sns.lineplot(
             data=df,

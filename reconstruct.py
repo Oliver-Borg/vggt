@@ -25,6 +25,7 @@ IMAGE_MODE = Literal["shuffle", "distributed", "mfps"]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
+COLMAP_MODE = Literal["default", "relaxed"]  # , "interpolated" TODO
 
 
 class GPUMonitor(threading.Thread):
@@ -279,6 +280,7 @@ def run_reconstruction(
     copy_mode: COPY_MODE,
     camera_type: CAMERA_TYPE,
     num_points: int = 100000,
+    colmap_mode: COLMAP_MODE = "default",
 ):
     name = name.strip("/")
     extra_parts = []
@@ -295,6 +297,8 @@ def run_reconstruction(
             extra_parts.append(camera_type.lower().replace("simple_", "m"))
 
         extra_parts.append(sampling_mode)
+    elif choice == "colmap":
+        extra_parts.append(colmap_mode)
 
     extra_parts.append(image_mode)
 
@@ -353,7 +357,7 @@ def run_reconstruction(
     t1 = time.time()
 
     if choice == "colmap":
-        profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=num_images < 50)
+        profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=colmap_mode == "relaxed")
     elif choice == "vggt":
         profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode, num_points, camera_type)
     else:
@@ -389,6 +393,7 @@ class Args:
     image_mode: IMAGE_MODE
     camera_type: CAMERA_TYPE
     num_points: int
+    colmap_mode: COLMAP_MODE = "default"
     copy_mode: COPY_MODE = None
     force: bool = False
 
@@ -407,6 +412,7 @@ def main(args: Args):
         copy_mode=args.copy_mode,
         camera_type=args.camera_type,
         num_points=args.num_points,
+        colmap_mode=args.colmap_mode,
     )
 
 
@@ -454,6 +460,13 @@ if __name__ == "__main__":
         default="SIMPLE_PINHOLE",
         choices=list(get_args(CAMERA_TYPE)),
         help="Camera type for reconstruction",
+    )
+    single_parser.add_argument(
+        "--colmap_mode",
+        type=str,
+        default="default",
+        choices=list(get_args(COLMAP_MODE)),
+        help="COLMAP mode for reconstruction",
     )
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
