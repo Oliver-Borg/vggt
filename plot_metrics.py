@@ -627,17 +627,21 @@ def plot_metric_combinations(
     else:
         plot_df["combo_series"] = plot_df["plot_series"] + " | " + x_axis + "=" + plot_df[x_axis].astype(str)
 
-    # Generate a color group that ignores the method (colmap/vggt) to sync colors
+    # Generate a color group that ignores the method (colmap/vggt/gt) to sync colors
     def get_color_group(combo_str):
         s = combo_str
         if s.startswith("colmap | "):
             return s[9:]
         if s.startswith("vggt | "):
             return s[7:]
+        if s.startswith("gt | "):
+            return s[5:]
         if s.startswith("colmap"):
             return s.replace("colmap", "base")
         if s.startswith("vggt"):
             return s.replace("vggt", "base")
+        if s.startswith("gt"):
+            return s.replace("gt", "base")
         return s
 
     plot_df["color_group"] = plot_df["combo_series"].apply(get_color_group)
@@ -723,7 +727,7 @@ def plot_graph(
     create_combinations: bool = False,
     copy_images: bool = False,
 ):
-    df = load_metrics_to_df(name, methods=["colmap", "vggt"], folders=folders)
+    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders)
 
     if df.empty:
         print("No data found.")
@@ -765,7 +769,7 @@ def plot_graph(
         unique_splits = sorted(split_val_series.unique())
     else:
         df["plot_series"] = df["method"]
-        unique_splits = ["colmap", "vggt"]
+        unique_splits = ["colmap", "vggt", "gt"]
 
     unique_series = sorted(df["plot_series"].unique())
 
@@ -801,6 +805,7 @@ def plot_graph(
     style_config = {
         "colmap": {"marker": "o", "dashes": ""},
         "vggt": {"marker": "X", "dashes": (2, 2)},
+        "gt": {"marker": "s", "dashes": (4, 4)},
     }
 
     pal = sns.color_palette("tab10", n_colors=len(unique_splits))
@@ -811,7 +816,14 @@ def plot_graph(
     dash_map = {}
 
     for series in unique_series:
-        method = "colmap" if "colmap" in series else "vggt"
+        if series.startswith("colmap"):
+            method = "colmap"
+        elif series.startswith("vggt"):
+            method = "vggt"
+        elif series.startswith("gt"):
+            method = "gt"
+        else:
+            method = "vggt"
 
         if valid_split_cols:
             val_str = series.replace(f"{method} | ", "")
@@ -894,7 +906,7 @@ def plot_graph(
 
     for i in range(len(axes)):
         handles, labels = axes[i].get_legend_handles_labels()
-        processed_labels = [label.replace("colmap", "COLMAP").replace("vggt", "VGGT") for label in labels]
+        processed_labels = [label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for label in labels]
         if handles:
             axes[i].legend(handles=handles, labels=processed_labels, markerscale=1.5)
 
