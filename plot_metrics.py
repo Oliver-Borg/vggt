@@ -236,6 +236,10 @@ def load_metrics_to_df(
 
     records_list = list(records.values())
 
+    for record in records_list:
+        if record.get("real_num_points") is not None and record.get("num_points") is None:
+            record["num_points"] = record["real_num_points"]
+
     if not records_list:
         return pd.DataFrame()
 
