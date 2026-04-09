@@ -16,12 +16,15 @@ from scipy.spatial.distance import cdist
 import torch
 import cv2
 import tqdm
+import pycolmap
 
+from cam_utils import get_poses
 from check_sparse import check_sparse_folder
+from combine_clouds import load_point_cloud
 from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
 
 
-IMAGE_MODE = Literal["shuffle", "distributed", "mfps"]
+IMAGE_MODE = Literal["shuffle", "distributed", "mfps", "farthestpose"]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
@@ -199,15 +202,11 @@ def save_timing(
         json.dump(stat, f, indent=4)
 
 
-def select_indices(indices: np.ndarray, num_images: int, seed: int):
+def _select_indices(coords: np.ndarray, num_images: int, seed: int):
     # Mean Farthest Point Sampling
     # TODO Try out normal Farthest Point Sampling
-    n = int(indices.shape[0])
-    angles = indices / (indices.max() - 1) * 2 * np.pi  # This assumes points are distributed in a circle
     # TODO Actually parse GT poses and use the real coordinates
-    xs = np.cos(angles)
-    ys = np.sin(angles)
-    coords = np.stack([xs, ys], axis=1)  # n, 2
+    n = int(coords.shape[0])
 
     selected_indices = [seed % n]  # These are the indices of the indices
     all_indices = np.arange(n)
@@ -226,13 +225,20 @@ def select_indices(indices: np.ndarray, num_images: int, seed: int):
 
         selected_indices.append(next_index)
 
-    return indices[np.array(selected_indices)]
+    return np.array(selected_indices)
 
+
+def select_indices(indices: np.ndarray, num_images: int, seed: int):
+    angles = indices / (indices.max() - 1) * 2 * np.pi  # This assumes points are distributed in a circle
+    xs = np.cos(angles)
+    ys = np.sin(angles)
+    coords = np.stack([xs, ys], axis=1)  # n, 2
+    return indices[_select_indices(coords, num_images, seed)]
 
 assert set(select_indices(np.arange(296), 30, 42)).issubset(select_indices(np.arange(296), 40, 42))
 
 
-def get_image_list(all_images: list[str], num_images: int | None, seed: int, image_mode: IMAGE_MODE):
+def get_image_list(all_images: list[str], num_images: int | None, seed: int, image_mode: IMAGE_MODE, pcd: pycolmap.Reconstruction | None = None):
 
     def sorter(name: str):  # TODO This sort may cause issues with lego
         digits = [c for c in name if c.isdigit()]
@@ -259,6 +265,16 @@ def get_image_list(all_images: list[str], num_images: int | None, seed: int, ima
         all_images = image_subset
     elif image_mode == "mfps":
         selected_indices = select_indices(indices, num_images, seed)
+        image_subset = []
+        for i in selected_indices:
+            image_subset.append(all_images[i])
+        all_images = image_subset
+    elif image_mode == "farthestpose":
+        assert pcd is not None
+        poses = get_poses(pcd)
+        coords = np.array([poses[name][:3, 3] for name in all_images])
+        assert set(_select_indices(coords, num_images // 2, seed)).issubset(_select_indices(coords, num_images, seed))
+        selected_indices = indices[_select_indices(coords, num_images, seed)]
         image_subset = []
         for i in selected_indices:
             image_subset.append(all_images[i])
@@ -318,7 +334,9 @@ def run_reconstruction(
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
 
-    all_images = get_image_list(all_images, num_images, seed, image_mode)
+    pcd = load_point_cloud(Path(input_path).parent / "sparse") if image_mode == "farthestpose" else None
+
+    all_images = get_image_list(all_images, num_images, seed, image_mode, pcd)
 
     num_images = len(all_images)
 

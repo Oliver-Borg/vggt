@@ -33,7 +33,7 @@ regexes = [
     Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
     Param(name="num_points", pattern=r"_p(\d+)", cast=int),
     Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
-    Param(name="image_mode", pattern=r"_(shuffle)|(distributed)|(mfps)", cast=str, default="shuffle"),
+    Param(name="image_mode", pattern=r"_(shuffle)|(distributed)|(mfps)|(farthestpose)", cast=str, default="shuffle"),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(
         name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default="Train Eval"
@@ -135,7 +135,7 @@ def apply_presentation_style():
 
 
 def load_metrics_to_df(
-    scene_name: str, methods: list[str], folders: list[tuple[str, str]] | None = None
+    scene_name: str, methods: list[str], folders: list[tuple[str, str]] | None = None, val_steps: list[int] = [7000],
 ) -> pd.DataFrame:
     """
     Loads both SfM and gsplat metrics for all methods into a single DataFrame.
@@ -149,12 +149,12 @@ def load_metrics_to_df(
         [  # TODO Deal with some results having both
             "gsplat",
             os.path.expanduser(
-                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i) + ".json"
+                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i - 1) + ".json"
             ),
             _parse_gsplat_json,
             gsplat_folders,
         ]
-        for i in [6999, 14999, 29999]
+        for i in val_steps
     ] + [
         [
             "sfm",
@@ -212,20 +212,12 @@ def load_metrics_to_df(
                     if source_name == "gsplat":
                         records[key] = record
                     else:
-                        key1 = (key[0], key[1] + "_val_step6999.json")
-                        key2 = (key[0], key[1] + "_val_step14999.json")
-                        key3 = (key[0], key[1] + "_val_step29999.json")
-
                         updated = False
-                        if key1 in records:
-                            records[key1].update(metrics)
-                            updated = True
-                        if key2 in records:
-                            records[key2].update(metrics)
-                            updated = True
-                        if key3 in records:
-                            records[key3].update(metrics)
-                            updated = True
+                        for step in val_steps:
+                            key1 = (key[0], key[1] + f"_val_step{step - 1}.json")
+                            if key1 in records:
+                                records[key1].update(metrics)
+                                updated = True
 
                         # If no corresponding gsplat record exists, save sfm as a standalone record
                         if not updated:
@@ -730,8 +722,9 @@ def plot_graph(
     create_pcp: bool = True,
     create_combinations: bool = False,
     copy_images: bool = False,
+    val_steps: list[int] = [7000],
 ):
-    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders)
+    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
 
     if df.empty:
         print("No data found.")
