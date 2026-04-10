@@ -220,8 +220,9 @@ def load_metrics_to_df(
                                 updated = True
 
                         # If no corresponding gsplat record exists, save sfm as a standalone record
-                        if not updated:
-                            records[("sfm", file_path)] = record
+                        # TODO Get this to work properly without creating orphaned series
+                        # if not updated:
+                        #     records[("sfm", file_path)] = record
 
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                     continue
@@ -855,7 +856,10 @@ def plot_graph(
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
     ]
 
-    fig, axes = plt.subplots(len(metrics_config) // 3, 3, figsize=(9 * len(metrics_config) // 3, 9))
+    rows = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
+    cols = len(metrics_config) // rows + (1 if len(metrics_config) % rows else 0)
+
+    fig, axes = plt.subplots(rows, cols, figsize=(8 * cols, 6 * rows))
     if len(metrics_config) == 1:
         axes = [axes]
 
