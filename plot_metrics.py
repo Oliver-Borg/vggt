@@ -42,19 +42,19 @@ regexes = [
         name="use_gt_extrinsics",
         pattern=r"_(gtext)",
         cast=lambda x: "GT Extrinsics" if x == "gtext" else "",
-        default="Train Extrinsics",
+        default="",
     ),
     Param(
         name="use_gt_intrinsics",
         pattern=r"_(gtint)",
         cast=lambda x: "GT Intrinsics" if x == "gtint" else "",
-        default="Train Intrinsics",
+        default="",
     ),
     Param(
         name="use_gt_points",
         pattern=r"_(gtpcd)",
         cast=lambda x: "GT Points" if x == "gtpcd" else "",
-        default="Train Points",
+        default="",
     ),
     Param(
         name="pose_opt",
@@ -135,7 +135,10 @@ def apply_presentation_style():
 
 
 def load_metrics_to_df(
-    scene_name: str, methods: list[str], folders: list[tuple[str, str]] | None = None, val_steps: list[int] = [7000],
+    scene_name: str,
+    methods: list[str],
+    folders: list[tuple[str, str]] | None = None,
+    val_steps: list[int] = [7000],
 ) -> pd.DataFrame:
     """
     Loads both SfM and gsplat metrics for all methods into a single DataFrame.
@@ -574,7 +577,8 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
 
     plt.tight_layout()
     plt.savefig(out_file, dpi=300)
-    print("PCP saved:", out_file)
+    plt.savefig(str(Path(out_file).with_suffix(".pdf")))
+    print("PCP saved:", out_file, "and PDF")
 
 
 def main():
@@ -710,7 +714,8 @@ def plot_metric_combinations(
 
     plt.tight_layout()
     plt.savefig(out_file, dpi=300, bbox_inches="tight")
-    print("Metric combinations plot saved:", Path(out_file))
+    plt.savefig(str(Path(out_file).with_suffix(".pdf")), bbox_inches="tight")
+    print("Metric combinations plot saved:", Path(out_file), "and PDF")
 
 
 def plot_graph(
@@ -907,7 +912,9 @@ def plot_graph(
 
     for i in range(len(axes)):
         handles, labels = axes[i].get_legend_handles_labels()
-        processed_labels = [label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for label in labels]
+        processed_labels = [
+            label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for label in labels
+        ]
         if handles:
             axes[i].legend(handles=handles, labels=processed_labels, markerscale=1.5)
 
@@ -924,7 +931,8 @@ def plot_graph(
     out_file = f"{suffix}.png"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     plt.savefig(out_file, dpi=300)
-    print("Comprehensive plot saved:", Path(out_file))
+    plt.savefig(str(Path(out_file).with_suffix(".pdf")))
+    print("Comprehensive plot saved:", Path(out_file), "and PDF")
 
     pcp_out_file = f"{suffix}_pcp.png"
     if create_pcp:
