@@ -15,6 +15,24 @@ import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 import pandas as pd
 import seaborn as sns
+import scienceplots
+
+plt.style.use(["science"])
+
+textwidth = 7.00697 * 2 / 3
+aspect_ratio = 6 / 8
+scale = 1.0
+width = textwidth * scale
+height = width * aspect_ratio
+
+plt.rcParams.update(
+    {
+        "text.usetex": False,
+        "mathtext.fontset": "cm",
+        "font.family": "serif",
+        "font.serif": ["CMU Serif", "Computer Modern Roman", "DejaVu Serif"],
+    }
+)
 
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*Calling float on a single element Series.*")
 
@@ -35,9 +53,7 @@ regexes = [
     Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
     Param(name="image_mode", pattern=r"_(shuffle)|(distributed)|(mfps)|(farthestpose)", cast=str, default=""),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
-    Param(
-        name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default="Train Eval"
-    ),
+    Param(name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default=""),
     Param(
         name="use_gt_extrinsics",
         pattern=r"_(gtext)",
@@ -60,13 +76,13 @@ regexes = [
         name="pose_opt",
         pattern=r"_(poseopt)",
         cast=lambda x: "Pose Opt" if x == "poseopt" else "",
-        default="No Pose Opt",
+        default="",
     ),
     Param(
         name="eval_opt",
         pattern=r"_(evalopt)",
         cast=lambda x: "Eval Pose Opt" if x == "evalopt" else "",
-        default="Def Eval Poses",
+        default="",
     ),
     Param(
         name="depth_loss",
@@ -97,41 +113,6 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
         else:
             params[p.name] = p.default
     return params
-
-
-def apply_presentation_style():
-    """High-visibility style with a massive, clear legend."""
-    sns.set_theme(style="whitegrid")
-
-    sns.set_context(
-        "talk",
-        rc={
-            "axes.titlesize": 24,
-            "axes.labelsize": 20,
-            "xtick.labelsize": 16,
-            "ytick.labelsize": 16,
-            "legend.fontsize": 22,
-            "legend.title_fontsize": 30,
-            "lines.linewidth": 2,
-            "lines.markersize": 8,
-        },
-    )
-
-    plt.rcParams.update(
-        {
-            "font.weight": "normal",
-            "axes.titleweight": "bold",
-            "figure.facecolor": "white",
-            "legend.frameon": True,
-            "legend.framealpha": 1.0,
-            "legend.edgecolor": "0.5",
-            "legend.fancybox": True,
-            "savefig.dpi": 300,
-        }
-    )
-
-
-# apply_presentation_style()
 
 
 def load_metrics_to_df(
@@ -317,6 +298,7 @@ def plot_metric(
     hlines: Dict[str, float] | None = None,
     hranges: Dict[str, Tuple[float, float]] | None = None,
     original_x_col: str | None = None,  # No jitter
+    y_log_scale: bool = False,
 ) -> None:
     """
     Generic plotting function using Seaborn.
@@ -342,6 +324,8 @@ def plot_metric(
             orient="h",
             legend=False,
         )
+        for container in ax.containers:
+            ax.bar_label(container, fontsize=10)
 
         # Calculate a small padding based on the axis limits
         x_min, x_max = ax.get_xlim()
@@ -415,6 +399,9 @@ def plot_metric(
             unique_x = sorted(df[label_col].fillna(5.0).unique().round())
             ax.set_xticks(unique_x)
             ax.set_xticklabels([str(n) for n in unique_x])
+
+    if y_log_scale:
+        ax.set_yscale("log")
 
     ax.grid(True, which="major", ls="-", alpha=0.15)
 
@@ -853,7 +840,7 @@ def plot_graph(
 
     # TODO Make this a parameter for which metrics to use
     metrics_config = [
-        {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓"},
+        {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓", "ylog": True},
         {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
         {"y": "psnr", "title": "Quality ($PSNR$)", "ylabel": "dB ↑"},
         {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
@@ -864,7 +851,7 @@ def plot_graph(
     rows = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
     cols = len(metrics_config) // rows + (1 if len(metrics_config) % rows else 0)
 
-    fig, axes = plt.subplots(rows, cols, figsize=(8 * cols, 6 * rows))
+    fig, axes = plt.subplots(rows, cols, figsize=(width * cols, height * rows))
     if len(metrics_config) == 1:
         axes = [axes]
 
@@ -908,6 +895,7 @@ def plot_graph(
             dashes=dash_map,
             hlines=hlines_dict,
             hranges=hranges_dict,
+            y_log_scale=config.get("ylog", False),
         )
 
     for i in range(len(axes)):
