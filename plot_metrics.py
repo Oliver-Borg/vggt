@@ -400,7 +400,7 @@ def plot_metric(
             ax.set_xticks(unique_x)
             ax.set_xticklabels([str(n) for n in unique_x])
 
-    if y_log_scale:
+    if y_log_scale and x:
         ax.set_yscale("log")
 
     ax.grid(True, which="major", ls="-", alpha=0.15)
