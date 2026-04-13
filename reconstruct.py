@@ -235,10 +235,17 @@ def select_indices(indices: np.ndarray, num_images: int, seed: int):
     coords = np.stack([xs, ys], axis=1)  # n, 2
     return indices[_select_indices(coords, num_images, seed)]
 
+
 assert set(select_indices(np.arange(296), 30, 42)).issubset(select_indices(np.arange(296), 40, 42))
 
 
-def get_image_list(all_images: list[str], num_images: int | None, seed: int, image_mode: IMAGE_MODE, pcd: pycolmap.Reconstruction | None = None):
+def get_image_list(
+    all_images: list[str],
+    num_images: int | None,
+    seed: int,
+    image_mode: IMAGE_MODE,
+    pcd: pycolmap.Reconstruction | None = None,
+):
 
     def sorter(name: str):  # TODO This sort may cause issues with lego
         digits = [c for c in name if c.isdigit()]
@@ -283,6 +290,46 @@ def get_image_list(all_images: list[str], num_images: int | None, seed: int, ima
     return all_images
 
 
+def check_files(base_output: Path, all_images: list[str], require_depth_conf: bool) -> bool:
+    images_path = Path(base_output) / "images"
+    num_images = len(all_images)
+    existing_images = os.listdir(images_path)
+
+    valid = True
+
+    if len(set(all_images) & set(existing_images)) != num_images:
+        print("Invalid images found in directory. Forcing reconstruction.")
+        for image in existing_images:
+            os.remove(Path(images_path) / image)
+        valid = False
+
+    if require_depth_conf:
+        depths_path = Path(base_output) / "depths"
+        all_depth_files = os.listdir(depths_path)
+
+        # np.save(os.path.join(path, "depths", f"depth_{camera_name}.npy"), depth)
+        # np.save(os.path.join(path, "depths", f"raw_conf_{camera_name}.npy"), depth_conf)
+        # np.save(os.path.join(path, "depths", f"depth_conf_{camera_name}.npy"), viz_conf)
+
+        missing_depths = False
+
+        for camera_name in all_images:
+            depth_map = f"depth_{camera_name}.npy"
+            raw_conf = f"raw_conf_{camera_name}.npy"
+            viz_conf = f"depth_conf_{camera_name}.npy"
+
+            if depth_map not in all_depth_files or viz_conf not in all_depth_files or raw_conf not in all_depth_files:
+                missing_depths = True
+                valid = False
+                break
+
+        if missing_depths:
+            for depth_file in all_depth_files:
+                os.remove(Path(depths_path) / depth_file)
+
+    return valid
+
+
 def run_reconstruction(
     name: str,
     input_path: str,
@@ -297,6 +344,7 @@ def run_reconstruction(
     camera_type: CAMERA_TYPE,
     num_points: int = 100000,
     colmap_mode: COLMAP_MODE = "default",
+    require_depth_conf: bool = False,
 ):
     name = name.strip("/")
     extra_parts = []
@@ -340,12 +388,7 @@ def run_reconstruction(
 
     num_images = len(all_images)
 
-    existing_images = os.listdir(images_path)
-
-    if len(set(all_images) & set(existing_images)) != num_images:
-        print("Invalid images found in directory. Forcing reconstruction.")
-        for image in existing_images:
-            os.remove(Path(images_path) / image)
+    if not check_files(Path(base_out), all_images, require_depth_conf=require_depth_conf and choice == "vggt"):
         force = True
 
     if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
@@ -375,7 +418,9 @@ def run_reconstruction(
     t1 = time.time()
 
     if choice == "colmap":
-        profiling = run_colmap_pipeline(base_out, images_path, db_path, sparse_path, low_view_count=colmap_mode == "relaxed")
+        profiling = run_colmap_pipeline(
+            base_out, images_path, db_path, sparse_path, low_view_count=colmap_mode == "relaxed"
+        )
     elif choice == "vggt":
         profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode, num_points, camera_type)
     else:
@@ -414,6 +459,7 @@ class Args:
     colmap_mode: COLMAP_MODE = "default"
     copy_mode: COPY_MODE = None
     force: bool = False
+    require_depth_conf: bool = False
 
 
 def main(args: Args):
@@ -431,6 +477,7 @@ def main(args: Args):
         camera_type=args.camera_type,
         num_points=args.num_points,
         colmap_mode=args.colmap_mode,
+        require_depth_conf=args.require_depth_conf,
     )
 
 
@@ -486,6 +533,7 @@ if __name__ == "__main__":
         choices=list(get_args(COLMAP_MODE)),
         help="COLMAP mode for reconstruction",
     )
+    single_parser.add_argument("--require_depth_conf", action="store_true", help="Require depth confidence map")
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(

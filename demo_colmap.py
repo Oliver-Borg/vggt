@@ -178,16 +178,18 @@ def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
     rgba = np_rgba(np_arr, cmap)
     return rgba[..., :3]
 
-def save_depths(path: str, depths: np.ndarray, depth_confs: np.ndarray, camera_names: list[str]):
+def save_depths(path: str, depths: np.ndarray, raw_confs: np.ndarray, viz_confs: np.ndarray, camera_names: list[str]):
     # Save the raw depth and confidence maps for visualization
     b = depths.shape[0]
     os.makedirs(os.path.join(path, "depths"), exist_ok=True)
     for i in range(b):
         depth = depths[i]
-        depth_conf = depth_confs[i]
+        raw_conf = raw_confs[i]
+        viz_conf = viz_confs[i]
         camera_name = camera_names[i]
         np.save(os.path.join(path, "depths", f"depth_{camera_name}.npy"), depth)
-        np.save(os.path.join(path, "depths", f"depth_conf_{camera_name}.npy"), depth_conf)
+        np.save(os.path.join(path, "depths", f"raw_conf_{camera_name}.npy"), raw_conf)
+        np.save(os.path.join(path, "depths", f"depth_conf_{camera_name}.npy"), viz_conf)
 
 
 model_cache = {}
@@ -296,6 +298,7 @@ def run_vggt(
     
     masks = masks.cpu().numpy().transpose(0, 2, 3, 1)
     depth_conf[masks[..., 0] == 0] = 0.0
+    orig_depth_conf = depth_conf.copy()
     depth_map[masks == 0] = np.nan
     warmup_t2 = time.time()
     warmup_vram_mb = get_gpu_stats()
@@ -460,7 +463,7 @@ def run_vggt(
     sparse_reconstruction_dir = os.path.join(scene_dir, "sparse")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
-    save_depths(scene_dir, depth_map[..., 0], depth_conf, base_image_path_list)
+    save_depths(scene_dir, depth_map[..., 0], orig_depth_conf, depth_conf, base_image_path_list)
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))
