@@ -19,7 +19,7 @@ import scienceplots
 
 plt.style.use(["science"])
 
-textwidth = 7.00697 * 2 / 3
+textwidth = 7.00697 # * 2 / 3
 aspect_ratio = 6 / 8
 scale = 1.0
 width = textwidth * scale
@@ -325,7 +325,7 @@ def plot_metric(
             legend=False,
         )
         for container in ax.containers:
-            ax.bar_label(container, fontsize=10)
+            ax.bar_label(container, fontsize=10, fmt="%.3g")
 
         # Calculate a small padding based on the axis limits
         x_min, x_max = ax.get_xlim()
@@ -337,7 +337,7 @@ def plot_metric(
             y_pos = patch.get_y() + patch.get_height() / 2
 
             txt = ax.text(x_pos, y_pos, tick_label.get_text(), ha="left", va="center", fontweight="bold")
-            txt.set_path_effects([path_effects.withStroke(linewidth=2.5, foreground="white")])
+            txt.set_path_effects([path_effects.withStroke(linewidth=1, foreground="white")])
 
         ax.set_yticks([])  # Hide original y-ticks
         ax.set_ylabel("")  # Remove y-axis label
@@ -410,7 +410,7 @@ def plot_metric(
         ax.get_legend().remove()
 
 
-def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
+def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str], title: str | None = None):
     """
     Plots a Parallel Coordinate Plot (PCP) for metrics and parameters.
     Uses smooth curves and adds jitter to y-positions to visualize density.
@@ -423,6 +423,25 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
     if not metrics:
         return
 
+    # Average metrics based on identical parameters (ignoring seed)
+    # TODO Get this to work properly
+    # if "seed" in params:
+    #     group_cols = [p for p in params if p != "seed"]
+    #     if group_cols:
+    #         df = df.groupby(group_cols, dropna=False)[metrics].mean().reset_index()
+    #     else:
+    #         df = df[metrics].mean().to_frame().T
+
+    # Remove all columns that only have a single value
+    df = df.loc[:, df.nunique(dropna=False) > 1]
+
+    # Update params and metrics after filtering
+    params = [p for p in params if p in df.columns]
+    metrics = [m for m in metrics if m in df.columns]
+
+    if not metrics or not params:
+        return
+
     num_metrics = len(metrics)
     fig, axes = plt.subplots(
         nrows=num_metrics, ncols=1, figsize=(max(10, len(params) * 1.5), 6 * num_metrics), sharex=False
@@ -430,6 +449,9 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str]):
 
     if num_metrics == 1:
         axes = [axes]
+
+    if title:
+        fig.suptitle(f"{title} - Parallel Coordinates", fontsize=16)
 
     for ax, metric in zip(axes, metrics):
         cols = params + [metric]
@@ -576,12 +598,13 @@ def main():
         "--split_param", default=None, help="Optional param to split series, e.g., conf_thres_value,sampling_mode"
     )
     parser.add_argument("--filter", default=None, help="Filter string, e.g. 'num_images=10,20;conf_thres_value=0.5'")
+    parser.add_argument("--title", default=None, help="Base title for the plots")
     args = parser.parse_args()
-    plot_graph(args.name, "default", args.x_axis, args.split_param, args.filter)
+    plot_graph(args.name, "default", args.x_axis, args.split_param, args.filter, title=args.title)
 
 
 def plot_metric_combinations(
-    df: pd.DataFrame, out_file: str, color_map: Dict[str, str], marker_map: Dict[str, str], x_axis: str
+    df: pd.DataFrame, out_file: str, color_map: Dict[str, str], marker_map: Dict[str, str], x_axis: str, title: str | None = None
 ) -> None:
     """
     Plots combinations of metrics (PSNR/LPIPS vs RTE/RRE) as point plots with trend lines.
@@ -592,7 +615,7 @@ def plot_metric_combinations(
     # Ensure metrics exist in the dataframe
     available_cols = df.columns
     valid_x = [m for m in x_metrics if m[0] in available_cols]
-    valid_y = [m for m in y_metrics if m[0] in available_cols]
+    valid_y = [y for y in y_metrics if y[0] in available_cols]
 
     if not valid_x or not valid_y:
         print("Required metrics for combination plots are not available.")
@@ -606,6 +629,9 @@ def plot_metric_combinations(
         axes = [axes]
     else:
         axes = axes.flatten()
+
+    if title:
+        fig.suptitle(f"{title} - Metric Combinations", fontsize=16)
 
     # Add the passed x-axis to the split params for grouping in the combination plot
     plot_df = df.copy()
@@ -716,6 +742,7 @@ def plot_graph(
     create_combinations: bool = False,
     copy_images: bool = False,
     val_steps: list[int] = [7000],
+    title: str | None = None,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
 
@@ -857,6 +884,9 @@ def plot_graph(
 
     axes = axes.flatten() if hasattr(axes, "flatten") else axes
 
+    if title:
+        fig.suptitle(f"{title} - Comprehensive Evaluation", fontsize=16)
+
     for ax, config in zip(axes, metrics_config):
         plot_df = df
         hlines_dict = OrderedDict()
@@ -924,11 +954,11 @@ def plot_graph(
 
     pcp_out_file = f"{suffix}_pcp.png"
     if create_pcp:
-        plot_pcp(df, pcp_out_file, color_map)
+        plot_pcp(df, pcp_out_file, color_map, title=title)
 
     combo_out_file = f"{suffix}_combos.png"
     if create_combinations:
-        plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis)
+        plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis, title=title)
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():
