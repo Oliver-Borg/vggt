@@ -44,7 +44,7 @@ from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np
 # TODO: test with more cases
 # TODO: test different camera types
 
-SAMPLING_MODE = Literal["random", "confidence", "voxels", "none", "ba"]
+SAMPLING_MODE = Literal["random", "confidence", "voxels", "none", "ba", "vox3"]
 
 
 def parse_args():
@@ -425,6 +425,8 @@ def run_vggt(
             )
         elif sampling_mode == "voxels":
             conf_mask = uniform_limit_trues(conf_mask, max_points_for_colmap, points_3d, depth_conf)
+        elif sampling_mode == "vox3":
+            conf_mask = uniform_limit_trues(conf_mask, max_points_for_colmap, points_3d, depth_conf, min_grid_occupancy=3)
 
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]

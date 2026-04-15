@@ -50,7 +50,7 @@ regexes = [
     Param(name="seed", pattern=r"_s(\d+)", cast=int),
     Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
     Param(name="num_points", pattern=r"_p(\d+)", cast=int),
-    Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)", cast=str),
+    Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)|(vox3)", cast=str),
     Param(name="image_mode", pattern=r"_(shuffle)|(distributed)|(mfps)|(farthestpose)", cast=str, default=""),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default=""),
@@ -89,6 +89,12 @@ regexes = [
         pattern=r"_(depth)",
         cast=lambda x: "Depth Loss" if x == "depth" else "",
         default="No Depth Loss",
+    ),
+    Param(
+        name="depth_lambda",
+        pattern=r"_(dl\d+\.\d+)",
+        cast=lambda x: (float(x.replace("dl", ""))) if x.startswith("dl") else 0.0,
+        default=0.0,
     ),
     Param(
         name="depth_conf",

@@ -44,6 +44,7 @@ def uniform_limit_trues(
     points_3d: np.ndarray,
     depth_conf: np.ndarray,
     grid_size: int = 1000,
+    min_grid_occupancy: int = 10,
 ):
     """
     If mask has more than max_trues True values,
@@ -79,7 +80,6 @@ def uniform_limit_trues(
     iters = 0
     best_grid_size = grid_size
     closest_count: int | None = None
-    min_grid_occupancy = 10  # This should be at least 4 because gaussian size is initiated using nearest 3 points.
 
     # Ideally we will have a value of grid_size that gives us ~100000 occupied voxels
     while iters < 10 and lower_grid_size < upper_grid_size:
