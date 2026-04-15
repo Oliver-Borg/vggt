@@ -17,7 +17,7 @@ import pandas as pd
 import seaborn as sns
 import scienceplots
 
-plt.style.use(["science"])
+plt.style.use(["science", "grid"])
 
 textwidth = 7.00697 # * 2 / 3
 aspect_ratio = 6 / 8
@@ -101,6 +101,12 @@ regexes = [
     Param(name="copy_mode", pattern=r"_(crop)|(tiles)|(square)", cast=str, default=None),
     Param(name="val_step", pattern=r"val_step(\d+)", cast=int, default=None),
     Param(name="colmap_mode", pattern=r"_(default)|(relaxed)", cast=str, default=None),
+    Param(
+        name="splatting_strategy",
+        pattern=r"_(nomcmc)",
+        cast=lambda x: "Default" if x == "nomcmc" else "MCMC",
+        default="MCMC",
+    ),
 ]
 
 
@@ -205,8 +211,8 @@ def load_metrics_to_df(
 
                         # If no corresponding gsplat record exists, save sfm as a standalone record
                         # TODO Get this to work properly without creating orphaned series
-                        # if not updated:
-                        #     records[("sfm", file_path)] = record
+                        if not updated:
+                            records[("sfm", file_path)] = record
 
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                     continue
@@ -299,6 +305,7 @@ def plot_metric(
     hranges: Dict[str, Tuple[float, float]] | None = None,
     original_x_col: str | None = None,  # No jitter
     y_log_scale: bool = False,
+    hatches: Dict[str, str] | None = None,
 ) -> None:
     """
     Generic plotting function using Seaborn.
@@ -312,31 +319,41 @@ def plot_metric(
     # df[x] = df[x].fillna(0)
 
     if not x:
+        hue_order = sorted(df[series_col].unique())
         sns.barplot(
             data=df,
             x=y,
             y=series_col,
             hue=series_col,
+            hue_order=hue_order,
             palette=colors,
             errorbar=("pi", 100),
             capsize=0.1,
             ax=ax,
             orient="h",
             legend=False,
+            width=0.5,
         )
+        
+        if hatches:
+            for i, container in enumerate(ax.containers):
+                if i < len(hue_order):
+                    hatch_pattern = hatches.get(hue_order[i], "")
+                    if hatch_pattern:
+                        for patch in container:
+                            patch.set_hatch(hatch_pattern)
+
         for container in ax.containers:
             ax.bar_label(container, fontsize=10, fmt="%.3g")
 
-        # Calculate a small padding based on the axis limits
         x_min, x_max = ax.get_xlim()
         padding = (x_max - x_min) * 0.01
 
-        # Add labels left-aligned but vertically centered inside the bars
         for patch, tick_label in zip(ax.patches, ax.get_yticklabels()):
             x_pos = patch.get_x() + padding
-            y_pos = patch.get_y() + patch.get_height() / 2
+            y_pos = patch.get_y() + patch.get_height() + 0.02
 
-            txt = ax.text(x_pos, y_pos, tick_label.get_text(), ha="left", va="center", fontweight="bold")
+            txt = ax.text(x_pos, y_pos, tick_label.get_text(), ha="left", va="top")
             txt.set_path_effects([path_effects.withStroke(linewidth=1, foreground="white")])
 
         ax.set_yticks([])  # Hide original y-ticks
@@ -820,9 +837,9 @@ def plot_graph(
             )
 
     style_config = {
-        "colmap": {"marker": "o", "dashes": ""},
-        "vggt": {"marker": "X", "dashes": (2, 2)},
-        "gt": {"marker": "s", "dashes": (4, 4)},
+        "colmap": {"marker": "o", "dashes": "", "hatch": ""},
+        "vggt": {"marker": "X", "dashes": (2, 2), "hatch": "///"},
+        "gt": {"marker": "s", "dashes": (4, 4), "hatch": "\\\\\\"},
     }
 
     pal = sns.color_palette("tab10", n_colors=len(unique_splits))
@@ -831,6 +848,7 @@ def plot_graph(
     color_map = {}
     marker_map = {}
     dash_map = {}
+    hatch_map = {}
 
     for series in unique_series:
         if series.startswith("colmap"):
@@ -851,6 +869,7 @@ def plot_graph(
 
         marker_map[series] = style_config[method]["marker"]
         dash_map[series] = style_config[method]["dashes"]
+        hatch_map[series] = style_config[method]["hatch"]
 
     colmap_means_by_series = {}
     colmap_min_by_series = {}
@@ -926,6 +945,7 @@ def plot_graph(
             hlines=hlines_dict,
             hranges=hranges_dict,
             y_log_scale=config.get("ylog", False),
+            hatches=hatch_map,
         )
 
     for i in range(len(axes)):
