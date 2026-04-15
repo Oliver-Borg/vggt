@@ -965,6 +965,11 @@ def plot_graph(
     df.to_csv(csv_out_file, index=False)
     print("Dataframe saved:", Path(csv_out_file))
 
+    json_out_file = f"{suffix}.json"
+    os.makedirs(os.path.dirname(json_out_file), exist_ok=True)
+    df.to_json(json_out_file, orient="records", indent=4)
+    print("Dataframe saved:", Path(json_out_file))
+
     plt.tight_layout()
     out_file = f"{suffix}.png"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
