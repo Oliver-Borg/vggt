@@ -225,6 +225,7 @@ def run_vggt(
     sampling_mode: SAMPLING_MODE = "random",
     num_points: int = 100000,
     model: VGGT | None = None,
+    cache_dir: str | None = None,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -261,57 +262,100 @@ def run_vggt(
     print(f"Using device: {device} ({gpu_num})")
     print(f"Using dtype: {dtype}")
 
-    # Run VGGT for camera and depth estimation
-    model_load_t1 = time.time()
-    if model is None:
-        model = load_model()
-    model_load_t2 = time.time()
-    model_alloc, model_res = model_vram_mb = get_gpu_stats()
-    print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
-
-    image_load_t1 = time.time()
-    # Get image paths and preprocess them
-    image_dir = os.path.join(scene_dir, "images")
-    image_path_list = sorted(glob.glob(os.path.join(image_dir, "*")))
-    if len(image_path_list) == 0:
-        raise ValueError(f"No images found in {image_dir}")
-    base_image_path_list = [os.path.basename(path) for path in image_path_list]
-
-    # Load images and original coordinates
-    # Load Image in 1024, while running VGGT with 518
     vggt_fixed_resolution = 518
     img_load_resolution = 518  # TODO try change this back to 1024
 
-    images, masks, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
-    images = images.to(device)
-    original_coords = original_coords.to(device)
-    print(f"Loaded {len(images)} images from {image_dir}")
-    image_load_t2 = time.time()
+    cache_file = os.path.join(cache_dir, "raw_preds.pt") if cache_dir else None
 
-    # Run VGGT to estimate camera and depth
-    # Run with 518x518 images
+    if cache_file and os.path.exists(cache_file):
+        print(f"Loading cached raw predictions from {cache_file}")
+        model_load_t1 = time.time()
+        model_load_t2 = time.time()
+        model_vram_mb = (0.0, 0.0)
 
-    # Warmup run
-    warmup_t1 = time.time()
-    extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
-    masks = F.interpolate(masks.to(torch.uint8), size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="nearest")
-    
-    masks = masks.cpu().numpy().transpose(0, 2, 3, 1)
-    depth_conf[masks[..., 0] == 0] = 0.0
-    orig_depth_conf = depth_conf.copy()
-    depth_map[masks == 0] = np.nan
-    warmup_t2 = time.time()
-    warmup_vram_mb = get_gpu_stats()
+        image_load_t1 = time.time()
+        cached_data = torch.load(cache_file, map_location=device)
+        images = cached_data["images"].to(device)
+        original_coords = cached_data["original_coords"].to(device)
+        extrinsic = cached_data["extrinsic"]
+        intrinsic = cached_data["intrinsic"]
+        depth_map = cached_data["depth_map"]
+        depth_conf = cached_data["depth_conf"]
+        orig_depth_conf = cached_data["orig_depth_conf"]
+        masks = cached_data["masks"]
+        base_image_path_list = cached_data["base_image_path_list"]
+        image_load_t2 = time.time()
+        print(f"Cached data loaded in {image_load_t2 - image_load_t1:.2f} seconds")
 
-    inf_times: list[float] = []
-    for _ in range(num_profiling_runs):
-        inf_t1 = time.time()
-        run_VGGT(model, images, dtype, vggt_fixed_resolution)
-        inf_t2 = time.time()
-        inf_times.append(inf_t2 - inf_t1)
+        warmup_t1 = time.time()
+        warmup_t2 = time.time()
+        warmup_vram_mb = (0.0, 0.0)
+        inf_times = []
+        inf_vram_mb = (0.0, 0.0)
 
-    inf_alloc, inf_res = inf_vram_mb = get_gpu_stats()
-    print(f"Inference run | Peak allocated GPU Mem: {inf_alloc:.2f} MB | Peak reserved GPU Mem: {inf_res:.2f} MB")
+    else:
+        # Run VGGT for camera and depth estimation
+        model_load_t1 = time.time()
+        if model is None:
+            model = load_model()
+        model_load_t2 = time.time()
+        model_alloc, model_res = model_vram_mb = get_gpu_stats()
+        print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
+
+        image_load_t1 = time.time()
+        # Get image paths and preprocess them
+        image_dir = os.path.join(scene_dir, "images")
+        image_path_list = sorted(glob.glob(os.path.join(image_dir, "*")))
+        if len(image_path_list) == 0:
+            raise ValueError(f"No images found in {image_dir}")
+        base_image_path_list = [os.path.basename(path) for path in image_path_list]
+
+        # Load images and original coordinates
+        # Load Image in 1024, while running VGGT with 518
+        images, masks, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
+        images = images.to(device)
+        original_coords = original_coords.to(device)
+        print(f"Loaded {len(images)} images from {image_dir}")
+        image_load_t2 = time.time()
+
+        # Run VGGT to estimate camera and depth
+        # Run with 518x518 images
+
+        # Warmup run
+        warmup_t1 = time.time()
+        extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+        masks = F.interpolate(masks.to(torch.uint8), size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="nearest")
+        
+        masks = masks.cpu().numpy().transpose(0, 2, 3, 1)
+        depth_conf[masks[..., 0] == 0] = 0.0
+        orig_depth_conf = depth_conf.copy()
+        depth_map[masks == 0] = np.nan
+        warmup_t2 = time.time()
+        warmup_vram_mb = get_gpu_stats()
+
+        inf_times: list[float] = []
+        for _ in range(num_profiling_runs):
+            inf_t1 = time.time()
+            run_VGGT(model, images, dtype, vggt_fixed_resolution)
+            inf_t2 = time.time()
+            inf_times.append(inf_t2 - inf_t1)
+
+        inf_alloc, inf_res = inf_vram_mb = get_gpu_stats()
+        print(f"Inference run | Peak allocated GPU Mem: {inf_alloc:.2f} MB | Peak reserved GPU Mem: {inf_res:.2f} MB")
+
+        if cache_file:
+            print(f"Saving raw predictions to {cache_file}")
+            torch.save({
+                "images": images.cpu(),
+                "original_coords": original_coords.cpu(),
+                "extrinsic": extrinsic,
+                "intrinsic": intrinsic,
+                "depth_map": depth_map,
+                "depth_conf": depth_conf,
+                "orig_depth_conf": orig_depth_conf,
+                "masks": masks,
+                "base_image_path_list": base_image_path_list,
+            }, cache_file)
 
     processing_t1 = time.time()
 

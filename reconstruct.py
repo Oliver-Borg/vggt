@@ -152,6 +152,7 @@ def run_colmap_pipeline(
 
 def run_vggt_pipeline(
     base_out: str,
+    cache_dir: str | None = None,
     conf_thres_value: float = 0.0,
     sampling_mode: SAMPLING_MODE = "random",
     num_points: int = 100000,
@@ -166,6 +167,7 @@ def run_vggt_pipeline(
         conf_thres_value=conf_thres_value,
         sampling_mode=sampling_mode,
         num_points=num_points,
+        cache_dir=cache_dir,
     )
 
 
@@ -347,6 +349,20 @@ def run_reconstruction(
     require_depth_conf: bool = False,
 ):
     name = name.strip("/")
+
+    # Define cache directory based on params affecting raw predictions
+    cache_parts = []
+    if num_images:
+        cache_parts.append(f"n{num_images}")
+    cache_parts.append(f"s{seed}")
+    cache_parts.append(image_mode)
+    if copy_mode is not None:
+        cache_parts.append(copy_mode)
+
+    cache_name = name + "_cache_" + "_".join(cache_parts)
+    cache_dir = f"./{choice}_outputs/{cache_name}"
+    os.makedirs(cache_dir, exist_ok=True)
+
     extra_parts = []
     if num_images:
         extra_parts.append(f"n{num_images}")
@@ -422,7 +438,7 @@ def run_reconstruction(
             base_out, images_path, db_path, sparse_path, low_view_count=colmap_mode == "relaxed"
         )
     elif choice == "vggt":
-        profiling = run_vggt_pipeline(base_out, conf_thres_value, sampling_mode, num_points, camera_type)
+        profiling = run_vggt_pipeline(base_out, cache_dir, conf_thres_value, sampling_mode, num_points, camera_type)
     else:
         raise ValueError("Invalid choice")
 
