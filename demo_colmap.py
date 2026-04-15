@@ -226,6 +226,7 @@ def run_vggt(
     num_points: int = 100000,
     model: VGGT | None = None,
     cache_dir: str | None = None,
+    save_conf_as_errors: bool = False,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -475,6 +476,7 @@ def run_vggt(
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]
         points_rgb = points_rgb[conf_mask]
+        points_errors = 1 / np.maximum(orig_depth_conf[conf_mask], 1)
         points_conf_rgb = np_rgb(depth_conf[conf_mask] ** 2 * depth_map[conf_mask].flatten())
 
         print("Converting to COLMAP format")
@@ -487,6 +489,7 @@ def run_vggt(
             image_size,
             shared_camera=shared_camera,
             camera_type=camera_type,
+            points_errors=points_errors if save_conf_as_errors else None,
         )
 
         reconstruction_resolution = vggt_fixed_resolution

@@ -23,6 +23,7 @@ def batch_np_matrix_to_pycolmap(
     extra_params=None,
     min_inlier_per_frame=64,
     points_rgb=None,
+    points_errors=None,
 ):
     """
     Convert Batched NumPy Arrays to PyCOLMAP
@@ -80,10 +81,14 @@ def batch_np_matrix_to_pycolmap(
     valid_idx = np.nonzero(valid_mask)[0]
 
     # Only add 3D points that have sufficient 2D points
+    point3D_id = 1
     for vidx in valid_idx:
         # Use RGB colors if provided, otherwise use zeros
         rgb = points_rgb[vidx] if points_rgb is not None else np.zeros(3)
         reconstruction.add_point3D(points3d[vidx], pycolmap.Track(), rgb)
+        if points_errors is not None:
+            reconstruction.points3D[point3D_id].error = float(points_errors[vidx])
+        point3D_id += 1
 
     num_points3D = len(valid_idx)
     camera = None
@@ -207,6 +212,7 @@ def batch_np_matrix_to_pycolmap_wo_track(
     image_size,
     shared_camera=False,
     camera_type="SIMPLE_PINHOLE",
+    points_errors=None,
 ):
     """
     Convert Batched NumPy Arrays to PyCOLMAP
@@ -233,6 +239,8 @@ def batch_np_matrix_to_pycolmap_wo_track(
 
     for vidx in range(P):
         reconstruction.add_point3D(points3d[vidx], pycolmap.Track(), points_rgb[vidx])
+        if points_errors is not None:
+            reconstruction.points3D[vidx + 1].error = float(points_errors[vidx])
 
     camera = None
     # frame idx

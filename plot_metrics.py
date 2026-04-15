@@ -91,6 +91,12 @@ regexes = [
         default="No Depth Loss",
     ),
     Param(
+        name="error_opa",
+        pattern=r"_(erroropa)",
+        cast=lambda x: "Err Opa Init" if x == "erroropa" else "",
+        default="",
+    ),
+    Param(
         name="depth_lambda",
         pattern=r"_(dl\d+\.\d+)",
         cast=lambda x: (float(x.replace("dl", ""))) if x.startswith("dl") else 0.0,

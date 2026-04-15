@@ -157,6 +157,7 @@ def run_vggt_pipeline(
     sampling_mode: SAMPLING_MODE = "random",
     num_points: int = 100000,
     camera_type: CAMERA_TYPE = "SIMPLE_PINHOLE",
+    save_conf_as_errors: bool = False,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
@@ -168,6 +169,7 @@ def run_vggt_pipeline(
         sampling_mode=sampling_mode,
         num_points=num_points,
         cache_dir=cache_dir,
+        save_conf_as_errors=save_conf_as_errors,
     )
 
 
@@ -307,6 +309,9 @@ def check_files(base_output: Path, all_images: list[str], require_depth_conf: bo
 
     if require_depth_conf:
         depths_path = Path(base_output) / "depths"
+        if not os.path.exists(depths_path):
+            os.makedirs(depths_path)
+
         all_depth_files = os.listdir(depths_path)
 
         # np.save(os.path.join(path, "depths", f"depth_{camera_name}.npy"), depth)
@@ -347,6 +352,7 @@ def run_reconstruction(
     num_points: int = 100000,
     colmap_mode: COLMAP_MODE = "default",
     require_depth_conf: bool = False,
+    save_conf_as_errors: bool = False,
 ):
     name = name.strip("/")
 
@@ -377,6 +383,9 @@ def run_reconstruction(
             extra_parts.append(camera_type.lower().replace("simple_", "m"))
 
         extra_parts.append(sampling_mode)
+
+        if save_conf_as_errors:
+            extra_parts.append("errconf")
     elif choice == "colmap":
         extra_parts.append(colmap_mode)
 
@@ -438,7 +447,9 @@ def run_reconstruction(
             base_out, images_path, db_path, sparse_path, low_view_count=colmap_mode == "relaxed"
         )
     elif choice == "vggt":
-        profiling = run_vggt_pipeline(base_out, cache_dir, conf_thres_value, sampling_mode, num_points, camera_type)
+        profiling = run_vggt_pipeline(
+            base_out, cache_dir, conf_thres_value, sampling_mode, num_points, camera_type, save_conf_as_errors
+        )
     else:
         raise ValueError("Invalid choice")
 
@@ -476,6 +487,7 @@ class Args:
     copy_mode: COPY_MODE = None
     force: bool = False
     require_depth_conf: bool = False
+    save_conf_as_errors: bool = False
 
 
 def main(args: Args):
@@ -494,6 +506,7 @@ def main(args: Args):
         num_points=args.num_points,
         colmap_mode=args.colmap_mode,
         require_depth_conf=args.require_depth_conf,
+        save_conf_as_errors=args.save_conf_as_errors,
     )
 
 
@@ -550,6 +563,7 @@ if __name__ == "__main__":
         help="COLMAP mode for reconstruction",
     )
     single_parser.add_argument("--require_depth_conf", action="store_true", help="Require depth confidence map")
+    single_parser.add_argument("--save_conf_as_errors", action="store_true", help="Save depth confidence map as errors")
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(
