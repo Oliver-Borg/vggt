@@ -203,11 +203,13 @@ def load_metrics_to_df(
                         records[key] = record
                     else:
                         updated = False
-                        for step in val_steps:
-                            key1 = (key[0], key[1] + f"_val_step{step - 1}.json")
-                            if key1 in records:
-                                records[key1].update(metrics)
-                                updated = True
+                        for sfm_folder, gsplat_folder in folders or []:
+                            if sfm_folder == source_folder:
+                                for step in val_steps:
+                                    key1 = (sfm_folder, gsplat_folder + f"_val_step{step - 1}.json")
+                                    if key1 in records:
+                                        records[key1].update(metrics)
+                                        updated = True
 
                         # If no corresponding gsplat record exists, save sfm as a standalone record
                         # TODO Get this to work properly without creating orphaned series
@@ -319,7 +321,7 @@ def plot_metric(
     # df[x] = df[x].fillna(0)
 
     if not x:
-        hue_order = sorted(df[series_col].unique())
+        hue_order = df[series_col].unique()
         sns.barplot(
             data=df,
             x=y,
