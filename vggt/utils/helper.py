@@ -21,6 +21,10 @@ def randomly_limit_trues(mask: np.ndarray, max_trues: int, depth_conf: np.ndarra
     
     if depth_conf is not None:
         true_ind_depths = depth_conf.flatten()[true_indices]
+        true_ind_depths -= float(true_ind_depths.min())
+        true_ind_depths /= float(true_ind_depths.max() + 1e-8)
+        # true_ind_depths = true_ind_depths ** 2  # Sharpen the distribution to favor higher confidence points even more
+
         sampled_indices = np.random.choice(
             true_indices,
             size=max_trues,
