@@ -112,6 +112,7 @@ regexes = [
     Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
     Param(name="copy_mode", pattern=r"_(crop)|(tiles)|(square)", cast=str, default=None),
     Param(name="val_step", pattern=r"val_step(\d+)", cast=int, default=None),
+    Param(name="num_steps", pattern=r"steps(\d+)", cast=int, default=None),
     Param(name="colmap_mode", pattern=r"_(default)|(relaxed)", cast=str, default=None),
     Param(
         name="splatting_strategy",
@@ -151,7 +152,7 @@ def load_metrics_to_df(
         [  # TODO Deal with some results having both
             "gsplat",
             os.path.expanduser(
-                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i - 1) + ".json"
+                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i - 1).zfill(4) + ".json"
             ),
             _parse_gsplat_json,
             gsplat_folders,
@@ -226,7 +227,7 @@ def load_metrics_to_df(
                         # If no corresponding gsplat record exists, save sfm as a standalone record
                         # TODO Get this to work properly without creating orphaned series
                         if not updated:
-                            records[("sfm", file_path)] = record
+                            records[(folder_name, "")] = record
 
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                     continue
@@ -269,6 +270,8 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "ssim": data.get("ssim"),
         "num_GS": data.get("num_GS"),
         "val_step": int(filename.split("val_step")[-1].split(".json")[0]),
+        "eval_rte": data.get("eval_rte"),
+        "eval_rre": data.get("eval_rre"),
     }
     if "num_points" in data:
         parsed_data["real_num_points"] = int(data["num_points"])
@@ -427,7 +430,7 @@ def plot_metric(
         if label_col in ["num_points"]:
             ax.set_xscale("log")
         else:
-            unique_x = sorted(df[label_col].fillna(5.0).unique().round())
+            unique_x = sorted(df[label_col].fillna(0.0).unique().round())
             ax.set_xticks(unique_x)
             ax.set_xticklabels([str(n) for n in unique_x])
 
@@ -774,6 +777,7 @@ def plot_graph(
     copy_images: bool = False,
     val_steps: list[int] = [7000],
     title: str | None = None,
+    metric_keys: list[str] = ["rre", "rte", "psnr", "lpips", "ssim", "num_GS"],
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
 
@@ -846,9 +850,15 @@ def plot_graph(
 
             jitter_width = min_dist * 0.15
 
+            max_val = df[x_axis].max()
+            min_val = df[x_axis].min()
+
             df[jitter_col] = df.apply(
                 lambda row: row[x_axis] + (centered_indices.get(row["plot_series"], 0) * jitter_width), axis=1
             )
+
+            df[jitter_col] = df[jitter_col].clip(lower=min_val, upper=max_val)
+            
 
     style_config = {
         "colmap": {"marker": "o", "dashes": "", "hatch": ""},
@@ -906,7 +916,13 @@ def plot_graph(
         {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
         {"y": "ssim", "title": "Perceptual ($SSIM$)", "ylabel": "Score ↑"},
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
+        {"y": "eval_rre", "title": "Validation Step Rotation ($RRE$)", "ylabel": "Degrees ↓", "ylog": True},
+        {"y": "eval_rte", "title": "Validation Step Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
     ]
+
+    metrics = {m["y"]: m for m in metrics_config}
+
+    metrics_config = [metrics[m] for m in metric_keys if m in metrics]
 
     rows = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
     cols = len(metrics_config) // rows + (1 if len(metrics_config) % rows else 0)
