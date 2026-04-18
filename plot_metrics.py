@@ -778,6 +778,10 @@ def plot_graph(
     val_steps: list[int] = [7000],
     title: str | None = None,
     metric_keys: list[str] = ["rre", "rte", "psnr", "lpips", "ssim", "num_GS"],
+    dataset_name: str | None = None,
+    experiment_name: str | None = None,
+    config_dict: dict | None = None,
+    apply_jitter: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
 
@@ -848,7 +852,7 @@ def plot_graph(
             else:
                 min_dist = 1.0
 
-            jitter_width = min_dist * 0.15
+            jitter_width = min_dist * 0.15 if apply_jitter else 0.0
 
             max_val = df[x_axis].max()
             min_val = df[x_axis].min()
@@ -934,7 +938,7 @@ def plot_graph(
     axes = axes.flatten() if hasattr(axes, "flatten") else axes
 
     if title:
-        fig.suptitle(f"{title} - Comprehensive Evaluation", fontsize=16)
+        fig.suptitle(f"{title}", fontsize=16)
 
     for ax, config in zip(axes, metrics_config):
         plot_df = df
@@ -1000,6 +1004,14 @@ def plot_graph(
     df.to_json(json_out_file, orient="records", indent=4)
     print("Dataframe saved:", Path(json_out_file))
 
+    config_out_file = None
+    if config_dict:
+        config_out_file = f"{suffix}_config.json"
+        os.makedirs(os.path.dirname(config_out_file), exist_ok=True)
+        with open(config_out_file, "w") as f:
+            json.dump(config_dict, f, indent=4)
+        print("Config saved:", Path(config_out_file))
+
     plt.tight_layout()
     out_file = f"{suffix}.png"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
@@ -1028,6 +1040,46 @@ def plot_graph(
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 for render_file in render_src_dir.glob(f"{p.stem}_*.png"):
                     shutil.copy2(render_file, dest_dir / render_file.name)
+
+    if dataset_name and experiment_name:
+        latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
+        os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
+        latest_full_png = f"{latest_suffix}_full.png"
+        shutil.copy2(out_file, latest_full_png)
+        print("Latest copy saved:", Path(latest_full_png))
+        latest_full_pdf = f"{latest_suffix}_full.pdf"
+        shutil.copy2(str(Path(out_file).with_suffix(".pdf")), latest_full_pdf)
+        print("Latest copy saved:", Path(latest_full_pdf))
+        latest_full_csv = f"{latest_suffix}_full.csv"
+        shutil.copy2(csv_out_file, latest_full_csv)
+        print("Latest copy saved:", Path(latest_full_csv))
+        latest_full_json = f"{latest_suffix}_full.json"
+        shutil.copy2(json_out_file, latest_full_json)
+        print("Latest copy saved:", Path(latest_full_json))
+        if config_out_file:
+            latest_config = f"{latest_suffix}_config.json"
+            shutil.copy2(config_out_file, latest_config)
+            print("Latest copy saved:", Path(latest_config))
+        if create_pcp:
+            latest_pcp_png = f"{latest_suffix}_pcp.png"
+            if Path(pcp_out_file).exists():
+                shutil.copy2(pcp_out_file, latest_pcp_png)
+                print("Latest copy saved:", Path(latest_pcp_png))
+            latest_pcp_pdf = f"{latest_suffix}_pcp.pdf"
+            pcp_pdf_file = str(Path(pcp_out_file).with_suffix(".pdf"))
+            if Path(pcp_pdf_file).exists():
+                shutil.copy2(pcp_pdf_file, latest_pcp_pdf)
+                print("Latest copy saved:", Path(latest_pcp_pdf))
+        if create_combinations:
+            latest_combo_png = f"{latest_suffix}_comparison.png"
+            if Path(combo_out_file).exists():
+                shutil.copy2(combo_out_file, latest_combo_png)
+                print("Latest copy saved:", Path(latest_combo_png))
+            latest_combo_pdf = f"{latest_suffix}_comparison.pdf"
+            combo_pdf_file = str(Path(combo_out_file).with_suffix(".pdf"))
+            if Path(combo_pdf_file).exists():
+                shutil.copy2(combo_pdf_file, latest_combo_pdf)
+                print("Latest copy saved:", Path(latest_combo_pdf))
 
     plt.show()
 
