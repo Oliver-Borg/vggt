@@ -622,7 +622,7 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str], title: 
 
     plt.tight_layout()
     plt.savefig(out_file, dpi=100)
-    plt.savefig(str(Path(out_file).with_suffix(".pdf")))
+    plt.savefig(str(Path(out_file).with_suffix(".pdf")), metadata={"CreationDate": None})
     print("PCP saved:", out_file, "and PDF")
 
 
@@ -763,7 +763,7 @@ def plot_metric_combinations(
 
     plt.tight_layout()
     plt.savefig(out_file, dpi=100, bbox_inches="tight")
-    plt.savefig(str(Path(out_file).with_suffix(".pdf")), bbox_inches="tight")
+    plt.savefig(str(Path(out_file).with_suffix(".pdf")), bbox_inches="tight", metadata={"CreationDate": None})
     print("Metric combinations plot saved:", Path(out_file), "and PDF")
 
 
@@ -1018,7 +1018,7 @@ def plot_graph(
     out_file = f"{suffix}.png"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     plt.savefig(out_file, dpi=100)
-    plt.savefig(str(Path(out_file).with_suffix(".pdf")))
+    plt.savefig(str(Path(out_file).with_suffix(".pdf")), metadata={"CreationDate": None})
     print("Comprehensive plot saved:", Path(out_file), "and PDF")
 
     pcp_out_file = f"{suffix}_pcp.png"
