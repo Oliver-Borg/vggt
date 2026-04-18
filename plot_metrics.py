@@ -541,6 +541,8 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str], title: 
         # Colormap
         cmap = plt.get_cmap("viridis")
 
+        np.random.seed(42)  # For consistent jitter across runs
+
         for idx, row in plot_df.iterrows():
             ys = row[cols].values.astype(float)
 
@@ -619,7 +621,7 @@ def plot_pcp(df: pd.DataFrame, out_file: str, color_map: Dict[str, str], title: 
         ax.set_title(f"Parallel Coordinate Plot: Parameters vs {metric.upper()}")
 
     plt.tight_layout()
-    plt.savefig(out_file, dpi=300)
+    plt.savefig(out_file, dpi=100)
     plt.savefig(str(Path(out_file).with_suffix(".pdf")))
     print("PCP saved:", out_file, "and PDF")
 
@@ -760,7 +762,7 @@ def plot_metric_combinations(
                     ax.get_legend().remove()
 
     plt.tight_layout()
-    plt.savefig(out_file, dpi=300, bbox_inches="tight")
+    plt.savefig(out_file, dpi=100, bbox_inches="tight")
     plt.savefig(str(Path(out_file).with_suffix(".pdf")), bbox_inches="tight")
     print("Metric combinations plot saved:", Path(out_file), "and PDF")
 
@@ -1015,7 +1017,7 @@ def plot_graph(
     plt.tight_layout()
     out_file = f"{suffix}.png"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
-    plt.savefig(out_file, dpi=300)
+    plt.savefig(out_file, dpi=100)
     plt.savefig(str(Path(out_file).with_suffix(".pdf")))
     print("Comprehensive plot saved:", Path(out_file), "and PDF")
 
