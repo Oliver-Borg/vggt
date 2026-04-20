@@ -673,7 +673,7 @@ def save_figure_tex(
     """
     
     latex_figure = (
-        "\\begin{figure}\n"
+        "\\begin{figure}[H]\n"
         "    \\centering\n"
         f"    \\includegraphics[width=1\\linewidth]{{{pdf_path}}}\n"
         f"    \\caption{{{caption}}}\n"
