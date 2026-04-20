@@ -13,24 +13,32 @@ import warnings
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
+import matplotlib.lines as mlines
 import pandas as pd
 import seaborn as sns
 import scienceplots
 
 plt.style.use(["science", "grid"])
 
-textwidth = 7.00697 # * 2 / 3
+textwidth = 7.00697
 aspect_ratio = 6 / 8
-scale = 1.0
+scale = 1.5
 width = textwidth * scale
 height = width * aspect_ratio
 
 plt.rcParams.update(
     {
         "text.usetex": False,
-        "mathtext.fontset": "cm",
-        "font.family": "serif",
-        "font.serif": ["CMU Serif", "Computer Modern Roman", "DejaVu Serif"],
+        "mathtext.fontset": "dejavusans",
+        "font.family": "sans-serif",
+        "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica", "Liberation Sans"],
+        "lines.linewidth": 0.75,
+        "lines.markersize": 6.0,
+        "patch.linewidth": 0.5,
+        "axes.linewidth": 0.4,
+        "grid.linewidth": 0.4,
+        "xtick.major.width": 0.4,
+        "ytick.major.width": 0.4,
     }
 )
 
@@ -152,7 +160,9 @@ def load_metrics_to_df(
         [  # TODO Deal with some results having both
             "gsplat",
             os.path.expanduser(
-                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step" + str(i - 1).zfill(4) + ".json"
+                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step"
+                + str(i - 1).zfill(4)
+                + ".json"
             ),
             _parse_gsplat_json,
             gsplat_folders,
@@ -206,6 +216,9 @@ def load_metrics_to_df(
                         data = json.load(f)
 
                     metrics = parser(data, file_path)
+
+                    if "val_step" in metrics:
+                        metrics["val_step"] += 1
 
                     # Construct record
                     record = {"method": method, "source": source_name}
@@ -273,6 +286,17 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "eval_rte": data.get("eval_rte"),
         "eval_rre": data.get("eval_rre"),
     }
+
+    if parsed_data["psnr"] is not None and parsed_data["lpips"] is not None and parsed_data["ssim"] is not None:
+        scaled_psnr = (parsed_data["psnr"] - 14) / (32 - 14)
+        scaled_ssim = (parsed_data["ssim"] - 0.35) / (0.92 - 0.35)
+        scaled_lpips = (parsed_data["lpips"] - 0.06) / (0.60 - 0.06)
+
+        quality = 1 / 3 * (scaled_psnr + scaled_ssim + 1 - scaled_lpips)
+        parsed_data["quality"] = quality
+    else:
+        parsed_data["quality"] = None
+
     if "num_points" in data:
         parsed_data["real_num_points"] = int(data["num_points"])
     return parsed_data
@@ -345,13 +369,13 @@ def plot_metric(
             hue_order=hue_order,
             palette=colors,
             errorbar=("pi", 100),
-            capsize=0.1,
+            capsize=0.05,
             ax=ax,
             orient="h",
             legend=False,
             width=0.5,
         )
-        
+
         if hatches:
             for i, container in enumerate(ax.containers):
                 if i < len(hue_order):
@@ -386,9 +410,8 @@ def plot_metric(
             dashes=dashes,
             palette=colors,
             errorbar=("pi", 100),
-            err_style="bars",
+            err_style="band",
             ax=ax,
-            err_kws={"capsize": 6},
         )
 
     if hranges:
@@ -429,7 +452,7 @@ def plot_metric(
 
         if label_col in ["num_points"]:
             ax.set_xscale("log")
-        else:
+        elif label_col not in ["num_images", "val_step"]:
             unique_x = sorted(df[label_col].fillna(0.0).unique().round())
             ax.set_xticks(unique_x)
             ax.set_xticklabels([str(n) for n in unique_x])
@@ -640,13 +663,19 @@ def main():
 
 
 def plot_metric_combinations(
-    df: pd.DataFrame, out_file: str, color_map: Dict[str, str], marker_map: Dict[str, str], x_axis: str, title: str | None = None
+    df: pd.DataFrame,
+    out_file: str,
+    color_map: Dict[str, str],
+    marker_map: Dict[str, str],
+    x_axis: str,
+    title: str | None = None,
+    single_legend: bool = True,
 ) -> None:
     """
     Plots combinations of metrics (PSNR/LPIPS vs RTE/RRE) as point plots with trend lines.
     """
-    x_metrics = [("rre", "Rotation ($RRE$) ↓"), ("rte", "Translation ($RTE$) ↓")]
-    y_metrics = [("psnr", "Quality ($PSNR$) ↑"), ("lpips", "Perceptual ($LPIPS$) ↓"), ("ssim", "Perceptual ($SSIM$) ↑")]
+    x_metrics = [("rre", "RRE ↓"), ("rte", "RTE ↓")]
+    y_metrics = [("psnr", "PSNR ↑"), ("lpips", "LPIPS ↓"), ("ssim", "SSIM ↑")]
 
     # Ensure metrics exist in the dataframe
     available_cols = df.columns
@@ -754,12 +783,41 @@ def plot_metric_combinations(
             ax.set_title(f"{y_col.upper()} vs {x_col.upper()}")
             ax.grid(True, which="major", ls="-", alpha=0.15)
 
-            # Keep a legend on the far-right plot
-            if ax.get_legend():
-                if ax_idx == num_plots - 1:
-                    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
-                else:
-                    ax.get_legend().remove()
+            # Remove individual legends to rely on a single global legend
+            if ax.get_legend() and single_legend:
+                ax.get_legend().remove()
+
+    if single_legend:
+        handles_dict = OrderedDict()
+        for ax in axes:
+            handles, labels = ax.get_legend_handles_labels()
+            for h, l in zip(handles, labels):
+                if l not in handles_dict:
+                    handles_dict[l] = h
+
+        if handles_dict:
+            handles = list(handles_dict.values())
+            ncol = max(1, min(len(handles) // 2, 10))
+
+            remainder = len(handles) % ncol
+            if remainder > 0:
+                pad_amount = ncol - remainder
+                dummy_handle = mlines.Line2D([], [], linestyle="")
+                handles.extend([dummy_handle] * pad_amount)
+                labels.extend([""] * pad_amount)
+
+            nrow = len(handles) // ncol
+            handles_row_first = [handles[r * ncol + c] for c in range(ncol) for r in range(nrow)]
+            labels_row_first = [labels[r * ncol + c] for c in range(ncol) for r in range(nrow)]
+
+            fig.legend(
+                handles=handles_row_first,
+                labels=labels_row_first,
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.0),
+                ncol=ncol,
+                markerscale=1.0,
+            )
 
     plt.tight_layout()
     plt.savefig(out_file, dpi=100, bbox_inches="tight")
@@ -774,7 +832,7 @@ def plot_graph(
     split_param: str | None = None,
     filter: str | None = None,
     folders: list[tuple[str, str]] | None = None,
-    create_pcp: bool = True,
+    create_pcp: bool = False,
     create_combinations: bool = False,
     copy_images: bool = False,
     val_steps: list[int] = [7000],
@@ -784,6 +842,8 @@ def plot_graph(
     experiment_name: str | None = None,
     config_dict: dict | None = None,
     apply_jitter: bool = False,
+    horizontal: bool = True,
+    single_legend: bool = True,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
 
@@ -864,7 +924,6 @@ def plot_graph(
             )
 
             df[jitter_col] = df[jitter_col].clip(lower=min_val, upper=max_val)
-            
 
     style_config = {
         "colmap": {"marker": "o", "dashes": "", "hatch": ""},
@@ -916,24 +975,31 @@ def plot_graph(
 
     # TODO Make this a parameter for which metrics to use
     metrics_config = [
-        {"y": "rre", "title": "Rotation ($RRE$)", "ylabel": "Degrees ↓", "ylog": True},
-        {"y": "rte", "title": "Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
-        {"y": "psnr", "title": "Quality ($PSNR$)", "ylabel": "dB ↑"},
-        {"y": "lpips", "title": "Perceptual ($LPIPS$)", "ylabel": "Score ↓"},
-        {"y": "ssim", "title": "Perceptual ($SSIM$)", "ylabel": "Score ↑"},
+        {"y": "rre", "title": "RRE", "ylabel": "Degrees ↓", "ylog": True},
+        {"y": "rte", "title": "RTE", "ylabel": "Norm. Units ↓"},
+        {"y": "psnr", "title": "PSNR", "ylabel": "dB ↑"},
+        {"y": "lpips", "title": "LPIPS", "ylabel": "Score ↓"},
+        {"y": "ssim", "title": "SSIM", "ylabel": "Score ↑"},
+        {"y": "quality", "title": "Composite Quality", "ylabel": "Score ↑"},
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
-        {"y": "eval_rre", "title": "Validation Step Rotation ($RRE$)", "ylabel": "Degrees ↓", "ylog": True},
-        {"y": "eval_rte", "title": "Validation Step Translation ($RTE$)", "ylabel": "Norm. Units ↓"},
+        {"y": "eval_rre", "title": "Validation Step RRE", "ylabel": "Degrees ↓", "ylog": True},
+        {"y": "eval_rte", "title": "Validation Step RTE", "ylabel": "Norm. Units ↓"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
 
     metrics_config = [metrics[m] for m in metric_keys if m in metrics]
 
-    rows = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
-    cols = len(metrics_config) // rows + (1 if len(metrics_config) % rows else 0)
+    if horizontal:
+        rows = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
+        cols = len(metrics_config) // rows + (1 if len(metrics_config) % rows else 0)
+    else:
+        cols = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
+        rows = len(metrics_config) // cols + (1 if len(metrics_config) % cols else 0)
 
-    fig, axes = plt.subplots(rows, cols, figsize=(width * cols, height * rows))
+    height = width / cols * aspect_ratio * rows
+
+    fig, axes = plt.subplots(rows, cols, figsize=(width, height))
     if len(metrics_config) == 1:
         axes = [axes]
 
@@ -984,13 +1050,51 @@ def plot_graph(
             hatches=hatch_map,
         )
 
-    for i in range(len(axes)):
-        handles, labels = axes[i].get_legend_handles_labels()
-        processed_labels = [
-            label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for label in labels
-        ]
-        if handles:
-            axes[i].legend(handles=handles, labels=processed_labels, markerscale=1.5)
+    if single_legend:
+        handles_dict = OrderedDict()
+        for i in range(len(axes)):
+            handles, labels = axes[i].get_legend_handles_labels()
+            for h, l in zip(handles, labels):
+                if l not in handles_dict:
+                    handles_dict[l] = h
+
+        if handles_dict:
+            processed_labels = [
+                l.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for l in handles_dict.keys()
+            ]
+
+            handles = list(handles_dict.values())
+            labels = processed_labels
+
+            ncol = max(1, min(len(handles) // 2 if len(handles) % 2 == 0 else len(handles), 10))
+
+            remainder = len(handles) % ncol
+            if remainder > 0:
+                pad_amount = ncol - remainder
+                dummy_handle = mlines.Line2D([], [], linestyle="")
+                handles.extend([dummy_handle] * pad_amount)
+                labels.extend([""] * pad_amount)
+
+            nrow = len(handles) // ncol
+            handles_row_first = [handles[r * ncol + c] for c in range(ncol) for r in range(nrow)]
+            labels_row_first = [labels[r * ncol + c] for c in range(ncol) for r in range(nrow)]
+
+            fig.legend(
+                handles=handles_row_first,
+                labels=labels_row_first,
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.0),
+                ncol=ncol,
+                markerscale=1.0,
+            )
+    else:
+        for i in range(len(axes)):
+            handles, labels = axes[i].get_legend_handles_labels()
+            processed_labels = [
+                label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for label in labels
+            ]
+            if handles:
+                axes[i].legend(handles=handles, labels=processed_labels, markerscale=1.0)
 
     suffix = f"plots/{prefix}/full_evaluation-{name}-{x_axis}-{split_param}"
 
@@ -1017,8 +1121,8 @@ def plot_graph(
     plt.tight_layout()
     out_file = f"{suffix}.png"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
-    plt.savefig(out_file, dpi=100)
-    plt.savefig(str(Path(out_file).with_suffix(".pdf")), metadata={"CreationDate": None})
+    plt.savefig(out_file, dpi=100, bbox_inches="tight")
+    plt.savefig(str(Path(out_file).with_suffix(".pdf")), bbox_inches="tight", metadata={"CreationDate": None})
     print("Comprehensive plot saved:", Path(out_file), "and PDF")
 
     pcp_out_file = f"{suffix}_pcp.png"
@@ -1027,7 +1131,7 @@ def plot_graph(
 
     combo_out_file = f"{suffix}_combos.png"
     if create_combinations:
-        plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis, title=title)
+        plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis, title=title, single_legend=single_legend)
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():
