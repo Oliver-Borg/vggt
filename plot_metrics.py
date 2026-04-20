@@ -844,6 +844,8 @@ def plot_graph(
     apply_jitter: bool = False,
     horizontal: bool = True,
     single_legend: bool = True,
+    create_table: bool = True,
+    print_title: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
 
@@ -975,15 +977,15 @@ def plot_graph(
 
     # TODO Make this a parameter for which metrics to use
     metrics_config = [
-        {"y": "rre", "title": "RRE", "ylabel": "Degrees ↓", "ylog": True},
-        {"y": "rte", "title": "RTE", "ylabel": "Norm. Units ↓"},
-        {"y": "psnr", "title": "PSNR", "ylabel": "dB ↑"},
-        {"y": "lpips", "title": "LPIPS", "ylabel": "Score ↓"},
-        {"y": "ssim", "title": "SSIM", "ylabel": "Score ↑"},
-        {"y": "quality", "title": "Composite Quality", "ylabel": "Score ↑"},
-        {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
-        {"y": "eval_rre", "title": "Validation Step RRE", "ylabel": "Degrees ↓", "ylog": True},
-        {"y": "eval_rte", "title": "Validation Step RTE", "ylabel": "Norm. Units ↓"},
+        {"y": "rre", "title": "RRE", "ylabel": "Degrees ↓", "direction": "↓", "ylog": True},
+        {"y": "rte", "title": "RTE", "ylabel": "Norm. Units ↓", "direction": "↓"},
+        {"y": "psnr", "title": "PSNR", "ylabel": "dB ↑", "direction": "↑"},
+        {"y": "lpips", "title": "LPIPS", "ylabel": "Score ↓", "direction": "↓"},
+        {"y": "ssim", "title": "SSIM", "ylabel": "Score ↑", "direction": "↑"},
+        {"y": "quality", "title": "Composite Quality", "ylabel": "Score ↑", "direction": "↑"},
+        {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count", "direction": "↓"},
+        {"y": "eval_rre", "title": "Validation Step RRE", "ylabel": "Degrees ↓", "direction": "↓", "ylog": True},
+        {"y": "eval_rte", "title": "Validation Step RTE", "ylabel": "Norm. Units ↓", "direction": "↓"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
@@ -1005,7 +1007,7 @@ def plot_graph(
 
     axes = axes.flatten() if hasattr(axes, "flatten") else axes
 
-    if title:
+    if title and print_title:
         fig.suptitle(f"{title}", fontsize=16)
 
     for ax, config in zip(axes, metrics_config):
@@ -1127,11 +1129,13 @@ def plot_graph(
 
     pcp_out_file = f"{suffix}_pcp.png"
     if create_pcp:
-        plot_pcp(df, pcp_out_file, color_map, title=title)
+        plot_pcp(df, pcp_out_file, color_map, title=title if print_title else None)
 
     combo_out_file = f"{suffix}_combos.png"
     if create_combinations:
-        plot_metric_combinations(df, combo_out_file, color_map, marker_map, x_axis, title=title, single_legend=single_legend)
+        plot_metric_combinations(
+            df, combo_out_file, color_map, marker_map, x_axis, title=title if print_title else None, single_legend=single_legend
+        )
 
     render_out_base = Path(suffix + "_renders")
     for file_path in df["file_path"].unique():
@@ -1188,6 +1192,140 @@ def plot_graph(
                 print("Latest copy saved:", Path(latest_combo_pdf))
 
     plt.show()
+
+    if create_table:
+        plot_table(
+            name=name,
+            prefix=prefix,
+            x_axis=x_axis,
+            split_param=split_param,
+            filter=filter,
+            folders=folders,
+            val_steps=val_steps,
+            title=title,
+            metric_keys=metric_keys,
+            metrics=metrics,
+            dataset_name=dataset_name,
+            experiment_name=experiment_name,
+        )
+
+
+def plot_table(
+    name: str,
+    prefix: str,
+    x_axis: str,
+    split_param: str | None = None,
+    filter: str | None = None,
+    folders: list[tuple[str, str]] | None = None,
+    val_steps: list[int] = [7000],
+    title: str | None = None,
+    metric_keys: list[str] = ["rre", "rte", "psnr", "lpips", "ssim", "num_GS"],
+    metrics: dict[str, dict[str, str]] = {},
+    dataset_name: str | None = None,
+    experiment_name: str | None = None,
+):
+    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
+
+    if df.empty:
+        print("No data to plot")
+        return
+
+    # Apply filters
+    if filter:
+        filters = parse_filters(filter)
+        for col, vals in filters.items():
+            if col in df.columns:
+                df = df[df[col].isin(vals)]
+
+    # Select relevant columns: choice, x_axis, split params, and metrics
+    columns_to_include = ["choice"]
+    
+    if x_axis:
+        columns_to_include.append(x_axis)
+        
+    if split_param:
+        split_cols = [p.strip() for p in split_param.split(",") if p.strip()]
+        columns_to_include.extend(split_cols)
+        
+    columns_to_include.extend(metric_keys)
+    
+    # Remove duplicates
+    columns_to_include = list(dict.fromkeys(columns_to_include))
+    # Keep only existing columns
+    columns_to_include = [col for col in columns_to_include if col in df.columns]
+    df_table = df[columns_to_include].drop_duplicates()
+
+    # Format method names for presentation (feature from plot_graph)
+    if "choice" in df_table.columns:
+        df_table["choice"] = df_table["choice"].replace({"colmap": "COLMAP", "vggt": "VGGT", "gt": "GT"})
+
+    # Sort the dataframe
+    sort_cols = []
+    if x_axis and x_axis in df_table.columns:
+        sort_cols.append(x_axis)
+    if split_param:
+        split_cols = [p.strip() for p in split_param.split(",") if p.strip()]
+        sort_cols.extend([c for c in split_cols if c in df_table.columns])
+    sort_cols.extend(["method", "choice", "seed"])
+    sort_cols = [col for col in sort_cols if col in df_table.columns]
+    df_table = df_table.sort_values(by=sort_cols)
+
+    rename_map = {}
+    if "choice" in df_table.columns:
+        rename_map["choice"] = "Choice"
+        
+    if x_axis and x_axis in df_table.columns:
+        rename_map[x_axis] = x_axis.replace("_", " ").title()
+        
+    if split_param:
+        for c in split_cols:
+            if c in df_table.columns:
+                rename_map[c] = c.replace("_", " ").title()
+                
+    for m in metric_keys:
+        if m in df_table.columns and m in metrics:
+            rename_map[m] = f"{metrics[m]['title']} {metrics[m]['direction']}"
+            
+    df_table = df_table.rename(columns=rename_map)
+
+    # Dynamic variables for LaTeX table
+    latex_caption = f"{title} ({str(dataset_name).title()})" if title else f"{prefix} - {dataset_name}"
+    latex_label = f"tab:{experiment_name}_{dataset_name}" if experiment_name else f"tab:{prefix}_{dataset_name}"
+
+    # Generate LaTeX table
+    latex_table = df_table.to_latex(
+        index=False,
+        float_format="%.3f",
+        caption=latex_caption,
+        label=latex_label,
+        longtable=False,
+        escape=False,
+    )
+
+    # Save to file
+    suffix = f"plots/{experiment_name}_{dataset_name}_{prefix}"
+    os.makedirs(os.path.dirname(suffix), exist_ok=True)
+
+    tex_out_file = f"{suffix}.tex"
+    os.makedirs(os.path.dirname(tex_out_file), exist_ok=True)
+    with open(tex_out_file, "w") as f:
+        f.write(latex_table)
+    print("LaTeX table saved:", Path(tex_out_file))
+
+    # Also save CSV for reference
+    csv_out_file = f"{suffix}.csv"
+    df_table.to_csv(csv_out_file, index=False)
+    print("CSV table saved:", Path(csv_out_file))
+
+    if dataset_name and experiment_name:
+        latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
+        os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
+        latest_tex = f"{latest_suffix}_table.tex"
+        shutil.copy2(tex_out_file, latest_tex)
+        print("Latest LaTeX table saved:", Path(latest_tex))
+        latest_csv = f"{latest_suffix}_table.csv"
+        shutil.copy2(csv_out_file, latest_csv)
+        print("Latest CSV table saved:", Path(latest_csv))
 
 
 if __name__ == "__main__":
