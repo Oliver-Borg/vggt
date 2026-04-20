@@ -662,6 +662,30 @@ def main():
     plot_graph(args.name, "default", args.x_axis, args.split_param, args.filter, title=args.title)
 
 
+def save_figure_tex(
+    tex_out_file: str,
+    pdf_path: str,
+    caption: str,
+    label: str,
+):
+    """
+    Generates a LaTeX figure block and saves it to a specified .tex file.
+    """
+    
+    latex_figure = (
+        "\\begin{figure}\n"
+        "    \\centering\n"
+        f"    \\includegraphics[width=1\\linewidth]{{{pdf_path}}}\n"
+        f"    \\caption{{{caption}}}\n"
+        f"    \\label{{{label}}}\n"
+        "\\end{figure}\n"
+    )
+    
+    os.makedirs(os.path.dirname(tex_out_file), exist_ok=True)
+    with open(tex_out_file, "w") as f:
+        f.write(latex_figure)
+    print("LaTeX figure saved:", Path(tex_out_file))
+
 def plot_metric_combinations(
     df: pd.DataFrame,
     out_file: str,
@@ -1160,6 +1184,19 @@ def plot_graph(
         latest_full_pdf = f"{latest_suffix}_full.pdf"
         shutil.copy2(str(Path(out_file).with_suffix(".pdf")), latest_full_pdf)
         print("Latest copy saved:", Path(latest_full_pdf))
+
+        latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
+        latex_label = f"fig:{experiment_name}_{dataset_name}" if experiment_name else f"fig:{prefix}_{dataset_name}"
+
+        save_figure_tex(
+            str(Path(latest_full_pdf).with_suffix(".tex")),
+            "Images/04-Results/" + Path(latest_full_pdf).name,
+            caption=latex_caption,
+            label=latex_label,
+        )
+
+        print("LaTeX figure saved:", Path(str(Path(latest_full_pdf).with_suffix(".tex"))))
+
         latest_full_csv = f"{latest_suffix}_full.csv"
         shutil.copy2(csv_out_file, latest_full_csv)
         print("Latest copy saved:", Path(latest_full_csv))
