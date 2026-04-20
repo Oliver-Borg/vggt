@@ -16,6 +16,7 @@ import matplotlib.patheffects as path_effects
 import matplotlib.lines as mlines
 import pandas as pd
 import seaborn as sns
+from PIL import Image, ImageDraw, ImageFont
 import scienceplots
 
 plt.style.use(["science", "grid"])
@@ -225,6 +226,7 @@ def load_metrics_to_df(
                     record.update(params)
                     record.update(metrics)
                     record["file_path"] = file_path
+                    record["folder"] = folder_name
                     if source_name == "gsplat":
                         records[key] = record
                     else:
@@ -671,7 +673,7 @@ def save_figure_tex(
     """
     Generates a LaTeX figure block and saves it to a specified .tex file.
     """
-    
+
     latex_figure = (
         "\\begin{figure}[H]\n"
         "    \\centering\n"
@@ -680,11 +682,12 @@ def save_figure_tex(
         f"    \\label{{{label}}}\n"
         "\\end{figure}\n"
     )
-    
+
     os.makedirs(os.path.dirname(tex_out_file), exist_ok=True)
     with open(tex_out_file, "w") as f:
         f.write(latex_figure)
     print("LaTeX figure saved:", Path(tex_out_file))
+
 
 def plot_metric_combinations(
     df: pd.DataFrame,
@@ -849,6 +852,151 @@ def plot_metric_combinations(
     print("Metric combinations plot saved:", Path(out_file), "and PDF")
 
 
+def add_text_to_image(
+    img: Image.Image,
+    text: str,
+    fontsize: int,
+):
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default(size=fontsize)
+    bbox = draw.textbbox((0, 0), text, font=font, spacing=0)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+
+    padding = 5
+    x_pos, y_pos = 0, 0
+    rect_coords = [x_pos, y_pos, x_pos + text_width + 2 * padding, y_pos + text_height + 2 * padding]
+
+    # Draw black background and white text
+    draw.rectangle(rect_coords, fill=(0, 0, 0))
+    draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font, spacing=0)
+
+
+def create_render_figure(
+    df,
+    dest_base,
+    title: str | None = None,
+    dataset_name: str | None = None,
+    experiment_name: str | None = None,
+    prefix: str | None = None,
+    x_axis: str | None = None,
+):
+    dest_base = Path(dest_base)
+    dest_base.mkdir(parents=True, exist_ok=True)
+
+    images_to_stack = []
+
+    df = df.copy()
+    for i, (idx, row) in enumerate(df.iterrows()):
+        last_row = i == len(df) - 1
+        file_path = row.get("file_path", "")
+        if not file_path or pd.isna(file_path):
+            continue
+
+        p = Path(file_path)
+        if "stats" in p.parts and "val_step" in p.name:
+            render_src_dir = p.parents[1] / "renders"
+            if render_src_dir.exists():
+                folder_name = p.parents[1].name
+
+                # Grab only the first image for this validation step
+                render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg")))
+                if render_files:
+                    first_render = render_files[0]
+                    try:
+                        img = Image.open(first_render).convert("RGB")
+
+                        w, h = img.size
+
+                        # img is composed of 4 parts.
+                        # gt, predicted, difference and blended all horizontally
+                        gt_img = img.crop((0, 0, w // 4, h))
+                        pred_img = img.crop((w // 4, 0, w // 2, h))
+                        # diff_img = img.crop((w // 2, 0, 3 * w // 4, h))
+                        # blended_img = img.crop((3 * w // 4, 0, w, h))
+
+                        # Prepare text label
+                        config_name = (
+                            str(row.get("plot_series", folder_name))
+                            .replace("colmap", "COLMAP")
+                            .replace("vggt", "VGGT")
+                            .replace("gt", "GT")
+                        )
+                        if x_axis and pd.notna(row.get(x_axis)):
+                            config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+
+                        psnr_val = row.get("psnr")
+                        lpips_val = row.get("lpips")
+
+                        psnr_str = f"{psnr_val:.2f}" if pd.notna(psnr_val) else "N/A"
+                        lpips_str = f"{lpips_val:.4f}" if pd.notna(lpips_val) else "N/A"
+
+                        label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str}"
+
+                        add_text_to_image(pred_img, label_text, 48)
+                        images_to_stack.append(pred_img)
+                        if last_row:
+                            add_text_to_image(gt_img, "Ground Truth", 48)
+                            images_to_stack.append(gt_img)
+                    except Exception as e:
+                        print(f"Error processing image {first_render}: {e}")
+
+    if images_to_stack:
+        # Stack images horizontally
+        # TODO Have a max width and wrap
+        # TODO Split this out into functions
+        widths, heights = zip(*(i.size for i in images_to_stack))
+        max_height = max(heights)
+        total_width = sum(widths)
+
+        stacked_img = Image.new("RGB", (total_width, max_height))
+
+        x_offset = 0
+        for im in images_to_stack:
+            stacked_img.paste(im, (x_offset, 0))
+            x_offset += im.size[0]
+
+        out_file = dest_base / "stacked_renders.png"
+        stacked_img.save(out_file)
+        print(f"Saved stacked renders to {out_file}")
+
+        out_pdf = dest_base / "stacked_renders.pdf"
+        stacked_img.save(out_pdf, "PDF", resolution=100.0)
+        print(f"Saved stacked renders PDF to {out_pdf}")
+
+        if dataset_name and experiment_name:
+            latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
+            os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
+
+            latest_render_png = f"{latest_suffix}_renders.png"
+            shutil.copy2(out_file, latest_render_png)
+            print("Latest copy saved:", Path(latest_render_png))
+
+            latest_render_pdf = f"{latest_suffix}_renders.pdf"
+            shutil.copy2(out_pdf, latest_render_pdf)
+            print("Latest copy saved:", Path(latest_render_pdf))
+
+            latex_caption = (
+                f"Render comparison for {title} ({str(dataset_name).title()})."
+                if title
+                else f"Render comparison for {prefix} - {dataset_name}."
+            )
+            latex_label = (
+                f"fig:renders_{experiment_name}_{dataset_name}"
+                if experiment_name
+                else f"fig:renders_{prefix}_{dataset_name}"
+            )
+
+            tex_out_path = str(Path(latest_render_pdf).with_suffix(".tex"))
+            save_figure_tex(
+                tex_out_path,
+                "Images/04-Results/Renders/" + Path(latest_render_pdf).name,
+                caption=latex_caption,
+                label=latex_label,
+            )
+            print("LaTeX figure saved:", Path(tex_out_path))
+
+
 def plot_graph(
     name: str,
     prefix: str,
@@ -856,9 +1004,9 @@ def plot_graph(
     split_param: str | None = None,
     filter: str | None = None,
     folders: list[tuple[str, str]] | None = None,
+    render_folders: list[str] | None = None,
     create_pcp: bool = False,
     create_combinations: bool = False,
-    copy_images: bool = False,
     val_steps: list[int] = [7000],
     title: str | None = None,
     metric_keys: list[str] = ["rre", "rte", "psnr", "lpips", "ssim", "num_GS"],
@@ -1158,23 +1306,30 @@ def plot_graph(
     combo_out_file = f"{suffix}_combos.png"
     if create_combinations:
         plot_metric_combinations(
-            df, combo_out_file, color_map, marker_map, x_axis, title=title if print_title else None, single_legend=single_legend
+            df,
+            combo_out_file,
+            color_map,
+            marker_map,
+            x_axis,
+            title=title if print_title else None,
+            single_legend=single_legend,
         )
 
-    render_out_base = Path(suffix + "_renders")
-    for file_path in df["file_path"].unique():
-        if not copy_images:
-            break
-        p = Path(file_path)
-        if "stats" in p.parts and "val_step" in p.name:
-            render_src_dir = p.parents[1] / "renders"
-            if render_src_dir.exists():
-                folder_name = p.parents[1].name
-                dest_dir = render_out_base / folder_name
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                for render_file in render_src_dir.glob(f"{p.stem}_*.png"):
-                    shutil.copy2(render_file, dest_dir / render_file.name)
+    if render_folders is not None:
+        render_out_base = Path(suffix + "_renders")
+        # Use render_folders to filter df based on "folder" column
+        render_df = df[df["folder"].isin(render_folders)]
 
+        if not render_df.empty:
+            create_render_figure(
+                render_df,
+                render_out_base,
+                title=title,
+                dataset_name=dataset_name,
+                experiment_name=experiment_name,
+                prefix=prefix,
+                x_axis=x_axis,
+            )
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
         os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
@@ -1276,16 +1431,16 @@ def plot_table(
 
     # Select relevant columns: choice, x_axis, split params, and metrics
     columns_to_include = ["choice"]
-    
+
     if x_axis:
         columns_to_include.append(x_axis)
-        
+
     if split_param:
         split_cols = [p.strip() for p in split_param.split(",") if p.strip()]
         columns_to_include.extend(split_cols)
-        
+
     columns_to_include.extend(metric_keys)
-    
+
     # Remove duplicates
     columns_to_include = list(dict.fromkeys(columns_to_include))
     # Keep only existing columns
@@ -1310,19 +1465,19 @@ def plot_table(
     rename_map = {}
     if "choice" in df_table.columns:
         rename_map["choice"] = "Choice"
-        
+
     if x_axis and x_axis in df_table.columns:
         rename_map[x_axis] = x_axis.replace("_", " ").title()
-        
+
     if split_param:
         for c in split_cols:
             if c in df_table.columns:
                 rename_map[c] = c.replace("_", " ").title()
-                
+
     for m in metric_keys:
         if m in df_table.columns and m in metrics:
             rename_map[m] = f"{metrics[m]['title']} {metrics[m]['direction']}"
-            
+
     df_table = df_table.rename(columns=rename_map)
 
     # Dynamic variables for LaTeX table
