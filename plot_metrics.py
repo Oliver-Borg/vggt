@@ -1026,9 +1026,9 @@ def create_render_figure(
             print("Latest copy saved:", Path(latest_render_pdf))
 
             latex_caption = (
-                f"Render comparison for {title} ({str(dataset_name).title()})."
+                f"{title} ({str(dataset_name).title()})."
                 if title
-                else f"Render comparison for {prefix} - {dataset_name}."
+                else f"{prefix} - {dataset_name}."
             )
             latex_label = (
                 f"fig:renders_{experiment_name}_{dataset_name}"
