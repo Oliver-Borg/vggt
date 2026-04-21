@@ -856,20 +856,29 @@ def add_text_to_image(
     img: Image.Image,
     text: str,
     fontsize: int,
-):
-    draw = ImageDraw.Draw(img)
+) -> Image.Image:
     font = ImageFont.load_default(size=fontsize)
-    bbox = draw.textbbox((0, 0), text, font=font, spacing=0)
+    # Use a temporary draw object to calculate the text bounding box
+    draw_temp = ImageDraw.Draw(img)
+    bbox = draw_temp.textbbox((0, 0), text, font=font, spacing=0)
     text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    text_height = int(bbox[3] - bbox[1])
 
     padding = 5
-    x_pos, y_pos = 0, 0
-    rect_coords = [x_pos, y_pos, x_pos + text_width + 2 * padding, y_pos + text_height + 2 * padding]
+    # Create a new image with extra height for the label at the bottom
+    new_height = img.height + text_height + 2 * padding
+    new_img = Image.new(img.mode, (img.width, new_height), (255, 255, 255))
+    new_img.paste(img, (0, 0))
 
-    # Draw black background and white text
-    draw.rectangle(rect_coords, fill=(0, 0, 0))
-    draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font, spacing=0)
+    draw = ImageDraw.Draw(new_img)
+    # Position the text in the new bottom area
+    # Subtracting bbox offsets ensures the ink starts at our padding boundary
+    x_pos, y_pos = padding - bbox[0], img.height + padding - bbox[1]
+
+    # Draw black text directly onto the white padded area
+    draw.text((x_pos, y_pos), text, fill=(0, 0, 0), font=font, spacing=0)
+
+    return new_img
 
 
 def _process_single_render(
@@ -927,11 +936,11 @@ def _process_single_render(
 
         label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str}"
 
-        add_text_to_image(pred_img, label_text, 48)
+        pred_img = add_text_to_image(pred_img, label_text, 48)
         images.append(pred_img)
 
         if last_row:
-            add_text_to_image(gt_img, "Ground Truth", 48)
+            gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
             images.append(gt_img)
 
     except Exception as e:
