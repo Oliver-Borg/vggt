@@ -872,6 +872,96 @@ def add_text_to_image(
     draw.text((x_pos, y_pos), text, fill=(255, 255, 255), font=font, spacing=0)
 
 
+def _process_single_render(
+    row: dict,
+    render_src_dir: Path,
+    p: Path,
+    folder_name: str,
+    x_axis: str | None = None,
+    last_row: bool = False,
+):
+    images = []
+    # Grab only the first image for this validation step
+    render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg")))
+    if not render_files:
+        return images
+
+    first_render = render_files[0]
+    try:
+        img = Image.open(first_render).convert("RGB")
+
+        w, h = img.size
+
+        # img is composed of 4 parts.
+        # gt, predicted, difference and blended all horizontally
+        gt_img = img.crop((0, 0, w // 4, h))
+        pred_img = img.crop((w // 4, 0, w // 2, h))
+        diff_img = img.crop((w // 2, 0, 3 * w // 4, h))
+        # blended_img = img.crop((3 * w // 4, 0, w, h))
+
+        # TODO Decide if we want to do one of these
+        # Paste a small version of the diff img in the bottom left corner of the pred_img
+        # diff_img = diff_img.resize((diff_img.width // 4, diff_img.height // 4))
+        # pred_img.paste(diff_img, (0, h - diff_img.height))
+
+        # Crop half the image on the right and paste it
+        # w, h = pred_img.size
+        # diff_img = diff_img.crop((w // 2, 0, w, h))
+        # pred_img.paste(diff_img, (w // 2, 0))
+
+        # Prepare text label
+        config_name = (
+            str(row.get("plot_series", folder_name))
+            .replace("colmap", "COLMAP")
+            .replace("vggt", "VGGT")
+            .replace("gt", "GT")
+        )
+        if x_axis and pd.notna(row.get(x_axis)):
+            config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+
+        psnr_val = row.get("psnr")
+        lpips_val = row.get("lpips")
+
+        psnr_str = f"{psnr_val:.2f}" if pd.notna(psnr_val) else "N/A"
+        lpips_str = f"{lpips_val:.4f}" if pd.notna(lpips_val) else "N/A"
+
+        label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str}"
+
+        add_text_to_image(pred_img, label_text, 48)
+        images.append(pred_img)
+
+        if last_row:
+            add_text_to_image(gt_img, "Ground Truth", 48)
+            images.append(gt_img)
+
+    except Exception as e:
+        print(f"Error processing image {first_render}: {e}")
+
+    return images
+
+
+def _stack_images_with_wrap(images: list[Image.Image], max_cols: int = 3):
+    rows = [images[i : i + max_cols] for i in range(0, len(images), max_cols)]
+
+    row_widths = [sum(im.size[0] for im in row) for row in rows]
+    row_heights = [max(im.size[1] for im in row) for row in rows]
+
+    total_width = max(row_widths)
+    total_height = sum(row_heights)
+
+    stacked_img = Image.new("RGB", (total_width, total_height), (255, 255, 255))
+
+    y_offset = 0
+    for row, row_h in zip(rows, row_heights):
+        x_offset = 0
+        for im in row:
+            stacked_img.paste(im, (x_offset, y_offset))
+            x_offset += im.size[0]
+        y_offset += row_h
+
+    return stacked_img
+
+
 def create_render_figure(
     df,
     dest_base,
@@ -880,6 +970,7 @@ def create_render_figure(
     experiment_name: str | None = None,
     prefix: str | None = None,
     x_axis: str | None = None,
+    max_cols: int = 3,
 ):
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
@@ -899,62 +990,11 @@ def create_render_figure(
             if render_src_dir.exists():
                 folder_name = p.parents[1].name
 
-                # Grab only the first image for this validation step
-                render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg")))
-                if render_files:
-                    first_render = render_files[0]
-                    try:
-                        img = Image.open(first_render).convert("RGB")
-
-                        w, h = img.size
-
-                        # img is composed of 4 parts.
-                        # gt, predicted, difference and blended all horizontally
-                        gt_img = img.crop((0, 0, w // 4, h))
-                        pred_img = img.crop((w // 4, 0, w // 2, h))
-                        # diff_img = img.crop((w // 2, 0, 3 * w // 4, h))
-                        # blended_img = img.crop((3 * w // 4, 0, w, h))
-
-                        # Prepare text label
-                        config_name = (
-                            str(row.get("plot_series", folder_name))
-                            .replace("colmap", "COLMAP")
-                            .replace("vggt", "VGGT")
-                            .replace("gt", "GT")
-                        )
-                        if x_axis and pd.notna(row.get(x_axis)):
-                            config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
-
-                        psnr_val = row.get("psnr")
-                        lpips_val = row.get("lpips")
-
-                        psnr_str = f"{psnr_val:.2f}" if pd.notna(psnr_val) else "N/A"
-                        lpips_str = f"{lpips_val:.4f}" if pd.notna(lpips_val) else "N/A"
-
-                        label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str}"
-
-                        add_text_to_image(pred_img, label_text, 48)
-                        images_to_stack.append(pred_img)
-                        if last_row:
-                            add_text_to_image(gt_img, "Ground Truth", 48)
-                            images_to_stack.append(gt_img)
-                    except Exception as e:
-                        print(f"Error processing image {first_render}: {e}")
+                processed_images = _process_single_render(row, render_src_dir, p, folder_name, x_axis, last_row)
+                images_to_stack.extend(processed_images)
 
     if images_to_stack:
-        # Stack images horizontally
-        # TODO Have a max width and wrap
-        # TODO Split this out into functions
-        widths, heights = zip(*(i.size for i in images_to_stack))
-        max_height = max(heights)
-        total_width = sum(widths)
-
-        stacked_img = Image.new("RGB", (total_width, max_height))
-
-        x_offset = 0
-        for im in images_to_stack:
-            stacked_img.paste(im, (x_offset, 0))
-            x_offset += im.size[0]
+        stacked_img = _stack_images_with_wrap(images_to_stack, max_cols=max_cols)
 
         out_file = dest_base / "stacked_renders.png"
         stacked_img.save(out_file)
