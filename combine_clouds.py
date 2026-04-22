@@ -1,4 +1,6 @@
 import argparse
+import shutil
+import time
 import pycolmap
 import numpy as np
 import json
@@ -166,7 +168,9 @@ def save_cameras_json(
     print(f"Saved camera parameters to {output_path}")
 
 
-def load_point_cloud(point_source_path: Path, return_path: bool = False) -> pycolmap.Reconstruction | tuple[pycolmap.Reconstruction, Path]:
+def load_point_cloud(
+    point_source_path: Path, return_path: bool = False
+) -> pycolmap.Reconstruction | tuple[pycolmap.Reconstruction, Path]:
     try:
         if "cameras.bin" not in os.listdir(point_source_path):
             raise ValueError(f"No cameras.bin found in {point_source_path}")
@@ -200,7 +204,7 @@ def load_cameras(camera_source_path: Path) -> pycolmap.Reconstruction:
     return rec
 
 
-def swap_and_align(camera_source_path: Path, point_source_path: Path, output_path: Path):
+def swap_and_align(camera_source_path: Path, point_source_path: Path, output_path: Path, use_both_pcds: bool = False):
     """
     This migrates the cameras from the camera_source_path to the point_source_path in place.
     It then transforms the points in point_source_path to match the cameras.
@@ -269,6 +273,13 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
         for p in rec_pts.points3D.values():
             p.xyz = s * (R @ p.xyz) + t
 
+    # If requested, merge points from the camera source (already in the target coordinate frame)
+    if use_both_pcds:
+        print("Merging points from both reconstructions...")
+        for p in rec_cam.points3D.values():
+            # Generate a new unique ID to avoid collisions
+            new_id = rec_pts.add_point3D(p.xyz, pycolmap.Track(), p.color)
+
     output_path.mkdir(parents=True, exist_ok=True)
     rec_pts.write(output_path)
     print(f"Reconstruction exported to {output_path}")
@@ -310,8 +321,48 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--camera_source", type=str, required=True, help="Path to point cloud with desired cameras.")
     parser.add_argument("--point_source", type=str, required=True, help="Path to point cloud with desired points.")
+    parser.add_argument(
+        "--use_both_pcds",
+        action="store_true",
+        help="If set, points from both reconstructions will be included in the output.",
+    )
     parser.add_argument("--output_dir", type=str, default="aligned_swap", help="Output directory.")
 
     args = parser.parse_args()
 
-    swap_and_align(Path(args.camera_source), Path(args.point_source), Path(args.output_dir))
+    swap_t1 = time.time()
+    swap_and_align(
+        Path(args.camera_source) / "sparse",
+        Path(args.point_source) / "sparse",
+        Path(args.output_dir) / "sparse",
+        use_both_pcds=args.use_both_pcds,
+    )
+    swap_t2 = time.time()
+
+    print(f"Swap took {swap_t2 - swap_t1:.2f} seconds")
+    copy_t1 = time.time()
+    shutil.copytree(Path(args.camera_source) / "images", Path(args.output_dir) / "images", dirs_exist_ok=True)
+    shutil.copytree(Path(args.point_source) / "images", Path(args.output_dir) / "images", dirs_exist_ok=True)
+    if os.path.exists(Path(args.camera_source) / "depths"):
+        shutil.copytree(Path(args.camera_source) / "depths", Path(args.output_dir) / "depths", dirs_exist_ok=True)
+    if os.path.exists(Path(args.point_source) / "depths"):
+        shutil.copytree(Path(args.point_source) / "depths", Path(args.output_dir) / "depths", dirs_exist_ok=True)
+    copy_t2 = time.time()
+
+    print(f"Copy took {copy_t2 - copy_t1:.2f} seconds")
+
+    with open(Path(args.output_dir) / "stat.json", "w") as f:
+        json.dump(
+            {
+                "date": time.strftime("%Y/%m/%d, %H:%M:%S", time.localtime()),
+                "input_path": args.camera_source,
+                "name": Path(args.output_dir).name,
+                "type": "combined",
+                "num_images": len(os.listdir(Path(args.output_dir) / "images")),
+                "profiling": {
+                    "swap_t": swap_t2 - swap_t1,
+                    "copy_t": copy_t2 - copy_t1,
+                },
+            },
+            f,
+        )

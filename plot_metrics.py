@@ -129,6 +129,8 @@ regexes = [
         cast=lambda x: "Default" if x == "nomcmc" else "MCMC",
         default="MCMC",
     ),
+    Param(name="cam_src", pattern=r"_(colmapcams)|(vggtcams)|(gtcams)", cast=str, default=None),
+    Param(name="pcd_src", pattern=r"_(colmappcd)|(vggtpcd)|(gtpcd)|(bothpcd)", cast=str, default=None),
 ]
 
 
@@ -924,6 +926,7 @@ def _process_single_render(
             .replace("colmap", "COLMAP")
             .replace("vggt", "VGGT")
             .replace("gt", "GT")
+            .replace("combined", "Combined")
         )
         if x_axis and pd.notna(row.get(x_axis)):
             config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
@@ -1068,7 +1071,7 @@ def plot_graph(
     create_table: bool = True,
     print_title: bool = False,
 ):
-    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
+    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
     if df.empty:
         print("No data found.")
@@ -1110,7 +1113,7 @@ def plot_graph(
         unique_splits = sorted(split_val_series.unique())
     else:
         df["plot_series"] = df["method"]
-        unique_splits = ["colmap", "vggt", "gt"]
+        unique_splits = ["colmap", "vggt", "gt", "combined"]
 
     unique_series = sorted(df["plot_series"].unique())
 
@@ -1152,6 +1155,7 @@ def plot_graph(
         "colmap": {"marker": "o", "dashes": "", "hatch": ""},
         "vggt": {"marker": "X", "dashes": (2, 2), "hatch": "///"},
         "gt": {"marker": "s", "dashes": (4, 4), "hatch": "\\\\\\"},
+        "combined": {"marker": "D", "dashes": (1, 1), "hatch": "xxx"},
     }
 
     pal = sns.color_palette("tab10", n_colors=len(unique_splits))
@@ -1169,6 +1173,8 @@ def plot_graph(
             method = "vggt"
         elif series.startswith("gt"):
             method = "gt"
+        elif series.startswith("combined"):
+            method = "combined"
         else:
             method = "vggt"
 
@@ -1283,7 +1289,7 @@ def plot_graph(
 
         if handles_dict:
             processed_labels = [
-                l.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for l in handles_dict.keys()
+                l.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT").replace("combined", "Combined") for l in handles_dict.keys()
             ]
 
             handles = list(handles_dict.values())
@@ -1314,7 +1320,7 @@ def plot_graph(
         for i in range(len(axes)):
             handles, labels = axes[i].get_legend_handles_labels()
             processed_labels = [
-                label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT") for label in labels
+                label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT").replace("combined", "Combined") for label in labels
             ]
             if handles:
                 axes[i].legend(handles=handles, labels=processed_labels, markerscale=1.0)
@@ -1465,7 +1471,7 @@ def plot_table(
     dataset_name: str | None = None,
     experiment_name: str | None = None,
 ):
-    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt"], folders=folders, val_steps=val_steps)
+    df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
     if df.empty:
         print("No data to plot")
@@ -1503,7 +1509,7 @@ def plot_table(
 
     # Format method names for presentation (feature from plot_graph)
     if "choice" in df_table.columns:
-        df_table["choice"] = df_table["choice"].replace({"colmap": "COLMAP", "vggt": "VGGT", "gt": "GT"})
+        df_table["choice"] = df_table["choice"].replace({"colmap": "COLMAP", "vggt": "VGGT", "gt": "GT", "combined": "Combined"})
 
     # Sort the dataframe
     sort_cols = []
