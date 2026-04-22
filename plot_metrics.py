@@ -1496,6 +1496,11 @@ def plot_table(
     columns_to_include = [col for col in columns_to_include if col in df.columns]
     df_table = df[columns_to_include].drop_duplicates()
 
+    non_metric_cols = [col for col in columns_to_include if col not in metric_keys]
+
+    # Take the mean of all metrics based on non_metric_cols
+    df_table = df_table.groupby(non_metric_cols).mean().reset_index()
+
     # Format method names for presentation (feature from plot_graph)
     if "choice" in df_table.columns:
         df_table["choice"] = df_table["choice"].replace({"colmap": "COLMAP", "vggt": "VGGT", "gt": "GT"})
@@ -1541,6 +1546,7 @@ def plot_table(
         label=latex_label,
         longtable=False,
         escape=False,
+        position="H",
     )
 
     # Save to file
