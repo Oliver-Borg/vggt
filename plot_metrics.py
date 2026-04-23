@@ -107,7 +107,7 @@ regexes = [
     ),
     Param(
         name="depth_lambda",
-        pattern=r"_(dl\d+\.\d+)",
+        pattern=r"_(dl\d+\.\d+)|(dl\d+)",
         cast=lambda x: (float(x.replace("dl", ""))) if x.startswith("dl") else 0.0,
         default=0.0,
     ),
@@ -129,8 +129,9 @@ regexes = [
         cast=lambda x: "Default" if x == "nomcmc" else "MCMC",
         default="MCMC",
     ),
-    Param(name="cam_src", pattern=r"_(colmapcams)|(vggtcams)|(gtcams)", cast=str, default=None),
+    Param(name="camera_src", pattern=r"_(colmapcams)|(vggtcams)|(gtcams)", cast=str, default=None),
     Param(name="pcd_src", pattern=r"_(colmappcd)|(vggtpcd)|(gtpcd)|(bothpcd)", cast=str, default=None),
+    Param(name="align_mode", pattern=r"_(amlocal)|(amglobal)", cast=lambda x: "Local Alignment" if x == "amlocal" else "Global Alignment", default=None),
 ]
 
 
@@ -404,8 +405,22 @@ def plot_metric(
         ax.set_yticks([])  # Hide original y-ticks
         ax.set_ylabel("")  # Remove y-axis label
     else:
+        plot_df = df
+        label_col_check = original_x_col if original_x_col else x
+
+        if label_col_check in ["depth_lambda"]:
+            plot_df = df.copy()
+            unique_base = sorted(plot_df[label_col_check].fillna(0.0).unique())
+            rank_map = {val: i for i, val in enumerate(unique_base)}
+            
+            if x != label_col_check:
+                jitter = plot_df[x] - plot_df[label_col_check]
+                plot_df[x] = plot_df[label_col_check].fillna(0.0).map(rank_map) + jitter
+            else:
+                plot_df[x] = plot_df[x].fillna(0.0).map(rank_map)
+
         sns.lineplot(
-            data=df,
+            data=plot_df,
             x=x,
             y=y,
             hue=series_col,
@@ -456,6 +471,10 @@ def plot_metric(
 
         if label_col in ["num_points"]:
             ax.set_xscale("log")
+        elif label_col in ["depth_lambda"]:
+            unique_x = sorted(df[label_col].fillna(0.0).unique())
+            ax.set_xticks(range(len(unique_x)))
+            ax.set_xticklabels([str(n) for n in unique_x])
         elif label_col not in ["num_images", "val_step"]:
             unique_x = sorted(df[label_col].fillna(0.0).unique().round())
             ax.set_xticks(unique_x)
@@ -1295,7 +1314,12 @@ def plot_graph(
             handles = list(handles_dict.values())
             labels = processed_labels
 
-            ncol = max(1, min(len(handles) // 2 if len(handles) % 2 == 0 else len(handles), 10))
+            fig_width = fig.get_figwidth()
+            max_label_length = max([len(l) for l in labels] + [0])
+
+            estimated_item_width = max_label_length * 0.07 + 0.2
+            allowed_cols = max(1, int(fig_width / estimated_item_width))
+            ncol = min(len(handles), allowed_cols)
 
             remainder = len(handles) % ncol
             if remainder > 0:
