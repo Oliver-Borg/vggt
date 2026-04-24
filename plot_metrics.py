@@ -390,6 +390,7 @@ def plot_metric(
     original_x_col: str | None = None,  # No jitter
     y_log_scale: bool = False,
     hatches: Dict[str, str] | None = None,
+    single_legend: bool = False,
 ) -> None:
     """
     Generic plotting function using Seaborn.
@@ -415,7 +416,7 @@ def plot_metric(
             capsize=0.05,
             ax=ax,
             orient="h",
-            legend=False,
+            legend=True,
             width=0.5,
         )
 
@@ -426,19 +427,28 @@ def plot_metric(
                     if hatch_pattern:
                         for patch in container:
                             patch.set_hatch(hatch_pattern)
-
+                            
+            # Explicitly apply hatches to the legend handles so outer logic picks them up
+            handles, labels = ax.get_legend_handles_labels()
+            for handle, label in zip(handles, labels):
+                hatch_pattern = hatches.get(label, "")
+                if hatch_pattern and hasattr(handle, "set_hatch"):
+                    handle.set_hatch(hatch_pattern)
+        
         for container in ax.containers:
             ax.bar_label(container, fontsize=10, fmt="%.3g")
 
-        x_min, x_max = ax.get_xlim()
-        padding = (x_max - x_min) * 0.01
+        if not single_legend:
 
-        for patch, tick_label in zip(ax.patches, ax.get_yticklabels()):
-            x_pos = patch.get_x() + padding
-            y_pos = patch.get_y() + patch.get_height() + 0.02
+            x_min, x_max = ax.get_xlim()
+            padding = (x_max - x_min) * 0.01
 
-            txt = ax.text(x_pos, y_pos, tick_label.get_text(), ha="left", va="top")
-            txt.set_path_effects([path_effects.withStroke(linewidth=1, foreground="white")])
+            for patch, tick_label in zip(ax.patches, ax.get_yticklabels()):
+                x_pos = patch.get_x() + padding
+                y_pos = patch.get_y() + patch.get_height() + 0.02
+
+                txt = ax.text(x_pos, y_pos, tick_label.get_text(), ha="left", va="top")
+                txt.set_path_effects([path_effects.withStroke(linewidth=1, foreground="white")])
 
         ax.set_yticks([])  # Hide original y-ticks
         ax.set_ylabel("")  # Remove y-axis label
@@ -1357,6 +1367,7 @@ def plot_graph(
             hranges=hranges_dict,
             y_log_scale=config.get("ylog", False),
             hatches=hatch_map,
+            single_legend=single_legend,
         )
 
     if single_legend:
