@@ -45,6 +45,7 @@ plt.rcParams.update(
 
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*Calling float on a single element Series.*")
 
+
 def np_rgba(np_arr: np.ndarray, cmap: str) -> np.ndarray:
     """
     Convert a grayscale image to RGBA using a matplotlib colormap
@@ -77,6 +78,7 @@ def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
     """
     rgba = np_rgba(np_arr, cmap)
     return rgba[..., :3]
+
 
 @dataclass
 class Param:
@@ -427,14 +429,14 @@ def plot_metric(
                     if hatch_pattern:
                         for patch in container:
                             patch.set_hatch(hatch_pattern)
-                            
+
             # Explicitly apply hatches to the legend handles so outer logic picks them up
             handles, labels = ax.get_legend_handles_labels()
             for handle, label in zip(handles, labels):
                 hatch_pattern = hatches.get(label, "")
                 if hatch_pattern and hasattr(handle, "set_hatch"):
                     handle.set_hatch(hatch_pattern)
-        
+
         for container in ax.containers:
             ax.bar_label(container, fontsize=10, fmt="%.3g")
 
@@ -1008,7 +1010,6 @@ def _process_single_render(
             depth = depth.crop((w // 2, 0, w, h))
             pred_img.paste(depth, (w // 2, 0))
 
-
         # Crop half the image on the right and paste it
         # w, h = pred_img.size
         # diff_img = diff_img.crop((w // 2, 0, w, h))
@@ -1160,6 +1161,7 @@ def plot_graph(
     single_legend: bool = True,
     create_table: bool = True,
     print_title: bool = False,
+    split_choice: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -1194,18 +1196,27 @@ def plot_graph(
         valid_split_cols = [c for c in split_cols if c in df.columns and c != "choice"]
         print(f"Invalid split cols: {set(split_cols) - set(valid_split_cols)}")
 
+    sort_cols = valid_split_cols.copy()
+    if "choice" in df.columns:
+        sort_cols.append("choice")
+    elif "method" in df.columns:
+        sort_cols.append("method")
+
+    if sort_cols:
+        df = df.sort_values(by=sort_cols)
+
     if valid_split_cols:
         split_val_series = df[valid_split_cols[0]].fillna("").astype(str)
         for col in valid_split_cols[1:]:
             split_val_series = split_val_series + " | " + df[col].fillna("").astype(str)
 
         df["plot_series"] = df["method"] + " | " + split_val_series
-        unique_splits = sorted(split_val_series.unique())
+        unique_splits = split_val_series.unique().tolist()
     else:
         df["plot_series"] = df["method"]
         unique_splits = ["colmap", "vggt", "gt", "combined"]
 
-    unique_series = sorted(df["plot_series"].unique())
+    unique_series = df["plot_series"].unique().tolist()
 
     series_indices = {s: i for i, s in enumerate(unique_series)}
     num_series = len(unique_series)
@@ -1309,17 +1320,35 @@ def plot_graph(
 
     metrics_config = [metrics[m] for m in metric_keys if m in metrics]
 
-    if horizontal:
-        rows = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
-        cols = len(metrics_config) // rows + (1 if len(metrics_config) % rows else 0)
+    plot_configs = []
+    if split_choice:
+        split_col = "choice" if "choice" in df.columns else "method"
+        choices = sorted(df[split_col].dropna().unique().tolist())
+        for choice_val in choices:
+            for m_config in metrics_config:
+                cfg = m_config.copy()
+                cfg["title"] = f"{cfg['title']} - {choice_val}"
+                cfg["choice_val"] = choice_val
+                cfg["split_col"] = split_col
+                plot_configs.append(cfg)
     else:
-        cols = len(metrics_config) // 3 + (1 if len(metrics_config) % 3 else 0)
-        rows = len(metrics_config) // cols + (1 if len(metrics_config) % cols else 0)
+        plot_configs = metrics_config.copy()
+
+    if not plot_configs:
+        print("No metrics/choices to plot.")
+        return
+
+    if horizontal:
+        rows = len(plot_configs) // 3 + (1 if len(plot_configs) % 3 else 0)
+        cols = len(plot_configs) // rows + (1 if len(plot_configs) % rows else 0)
+    else:
+        cols = len(plot_configs) // 3 + (1 if len(plot_configs) % 3 else 0)
+        rows = len(plot_configs) // cols + (1 if len(plot_configs) % cols else 0)
 
     height = width / cols * aspect_ratio * rows
 
     fig, axes = plt.subplots(rows, cols, figsize=(width, height))
-    if len(metrics_config) == 1:
+    if len(plot_configs) == 1:
         axes = [axes]
 
     axes = axes.flatten() if hasattr(axes, "flatten") else axes
@@ -1327,13 +1356,23 @@ def plot_graph(
     if title and print_title:
         fig.suptitle(f"{title}", fontsize=16)
 
-    for ax, config in zip(axes, metrics_config):
+    for ax, config in zip(axes, plot_configs):
         plot_df = df
         hlines_dict = OrderedDict()
         hranges_dict = OrderedDict()
 
+        if split_choice and "choice_val" in config:
+            split_col = config["split_col"]
+            if split_col == "method":
+                plot_df = df[df[split_col] == config["choice_val"]]
+            else:
+                # Keep targeted choice plus the colmap baseline (if its choice is null/NaN)
+                plot_df = df[
+                    (df[split_col] == config["choice_val"]) | (df[split_col].isna() & (df["method"] == "colmap"))
+                ]
+
         if x_axis == "conf_thres_value" and not colmap_df.empty:
-            plot_df = df[df["method"] != "colmap"]
+            plot_df = plot_df[plot_df["method"] != "colmap"]
             sort_key = valid_split_cols[0] if valid_split_cols else None
 
             for series_name, metric_values in list(
@@ -1379,15 +1418,22 @@ def plot_graph(
                     handles_dict[l] = h
 
         if handles_dict:
+            # Reorder handles and labels based on the natural sorted order of unique_series
+            ordered_labels = [s for s in unique_series if s in handles_dict]
+
+            # Catch any remaining items (e.g., hline labels not in unique_series)
+            ordered_labels.extend([l for l in handles_dict if l not in ordered_labels])
+            ordered_handles = [handles_dict[l] for l in ordered_labels]
+
             processed_labels = [
                 l.replace("colmap", "COLMAP")
                 .replace("vggt", "VGGT")
                 .replace("gt", "GT")
                 .replace("combined", "Combined")
-                for l in handles_dict.keys()
+                for l in ordered_labels
             ]
 
-            handles = list(handles_dict.values())
+            handles = ordered_handles
             labels = processed_labels
 
             fig_width = fig.get_figwidth()
