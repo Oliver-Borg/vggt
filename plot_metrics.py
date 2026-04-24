@@ -968,7 +968,7 @@ def _process_single_render(
         return images
 
     first_render = render_files[0]
-    depth_factors = row.get("raw_metrics", {}).get("depth_factor", [])
+    depth_factors = (row.get("raw_metrics", {}) or {}).get("depth_factor", [])
     depth_factor = depth_factors[0] if depth_factors else None
 
     try:
@@ -1162,6 +1162,7 @@ def plot_graph(
     create_table: bool = True,
     print_title: bool = False,
     split_choice: bool = False,
+    max_render_cols: int = 3,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -1534,6 +1535,7 @@ def plot_graph(
                 experiment_name=experiment_name,
                 prefix=prefix,
                 x_axis=x_axis,
+                max_cols=max_render_cols,
             )
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
