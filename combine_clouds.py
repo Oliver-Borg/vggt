@@ -204,7 +204,13 @@ def load_cameras(camera_source_path: Path) -> pycolmap.Reconstruction:
     return rec
 
 
-def swap_and_align(camera_source_path: Path, point_source_path: Path, output_path: Path, use_both_pcds: bool = False):
+def swap_and_align(
+    camera_source_path: Path,
+    point_source_path: Path,
+    output_path: Path,
+    use_both_pcds: bool = False,
+    align_each_point_set: bool = False,
+):
     """
     This migrates the cameras from the camera_source_path to the point_source_path in place.
     It then transforms the points in point_source_path to match the cameras.
@@ -248,6 +254,8 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
     img_to_cam_map = {image.name: rec_cam.cameras[image.camera_id] for image in rec_cam.images.values()}
     pts_cam_id_to_img_map = {img.camera_id: img.name for img in rec_pts.images.values()}
 
+    transformed_point_ids = set()
+
     for image_id, image in rec_pts.images.items():
         cam = rec_pts.cameras[image.camera_id]
         cam_id = cam.camera_id
@@ -261,17 +269,31 @@ def swap_and_align(camera_source_path: Path, point_source_path: Path, output_pat
         src_cam = img_to_cam_map[img_name]
         src_image = img_to_img_map[img_name]
 
-        # Copy the intrinsics from src_cam to cam and the extrinsics from src_image to image
+        orig_t, orig_R = cfw_to_c2w(image.cam_from_world)
+        new_t, new_R = cfw_to_c2w(src_image.cam_from_world)
 
+        # Copy the intrinsics from src_cam to cam and the extrinsics from src_image to image
         src_cam.camera_id = cam.camera_id
         rec_pts.cameras[image.camera_id] = src_cam
         image.cam_from_world.translation = src_image.cam_from_world.translation
         image.cam_from_world.rotation.quat = src_image.cam_from_world.rotation.quat
+        # Transform the specific points attached to this camera to preserve local geometry
+        if align_each_point_set:
+            for p2d in image.points2D:
+                if p2d.has_point3D():
+                    pid = p2d.point3D_id
+                    if pid not in transformed_point_ids and pid in rec_pts.points3D:
+                        p3d = rec_pts.points3D[pid]
+                        # Convert to local camera frame, then back to world using the new camera pose
+                        X_cam = orig_R.T @ (p3d.xyz - orig_t)
+                        p3d.xyz = s * (new_R @ X_cam) + new_t
+                        transformed_point_ids.add(pid)
 
-    # Rotate, scale and translate points to match src coord frame
+    # Rotate, scale and translate remaining points to match src coord frame
     if s > 0.0:
-        for p in rec_pts.points3D.values():
-            p.xyz = s * (R @ p.xyz) + t
+        for pid, p in rec_pts.points3D.items():
+            if pid not in transformed_point_ids:
+                p.xyz = s * (R @ p.xyz) + t
 
     # If requested, merge points from the camera source (already in the target coordinate frame)
     if use_both_pcds:
@@ -326,6 +348,11 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, points from both reconstructions will be included in the output.",
     )
+    parser.add_argument(
+        "--align_each_point_set",
+        action="store_true",
+        help="If set, points associated with each camera will be individually aligned to preserve local geometry. Otherwise, a single global transform is applied to all points.",
+    )
     parser.add_argument("--output_dir", type=str, default="aligned_swap", help="Output directory.")
 
     args = parser.parse_args()
@@ -336,6 +363,7 @@ if __name__ == "__main__":
         Path(args.point_source) / "sparse",
         Path(args.output_dir) / "sparse",
         use_both_pcds=args.use_both_pcds,
+        align_each_point_set=args.align_each_point_set,
     )
     swap_t2 = time.time()
 
