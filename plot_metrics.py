@@ -45,6 +45,38 @@ plt.rcParams.update(
 
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*Calling float on a single element Series.*")
 
+def np_rgba(np_arr: np.ndarray, cmap: str) -> np.ndarray:
+    """
+    Convert a grayscale image to RGBA using a matplotlib colormap
+    Args:
+        np_arr (np.ndarray): The grayscale image
+        cmap (str): The name of the matplotlib colormap to use
+    Returns:
+        np.ndarray: The RGBA image
+    """
+
+    max_value = np_arr.max()
+
+    normalised = np_arr.astype(np.float32) / max_value
+    mapper = plt.get_cmap(cmap)
+    rgba = mapper(normalised)
+    rgba = rgba * 255
+    rgba = rgba.astype(np.uint8)
+    # rgba[np_arr == 0] = [21, 59, 106, 255] #153b6a
+    return rgba
+
+
+def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
+    """
+    Convert a grayscale image to RGB using a matplotlib colormap
+    Args:
+        np_arr (np.ndarray): The grayscale image
+        cmap (str): The name of the matplotlib colormap to use
+    Returns:
+        np.ndarray: The RGB image
+    """
+    rgba = np_rgba(np_arr, cmap)
+    return rgba[..., :3]
 
 @dataclass
 class Param:
@@ -97,7 +129,7 @@ regexes = [
         name="depth_loss",
         pattern=r"_(depth)",
         cast=lambda x: "Depth Loss" if x == "depth" else "",
-        default="No Depth Loss",
+        default="",
     ),
     Param(
         name="error_opa",
@@ -115,7 +147,7 @@ regexes = [
         name="depth_conf",
         pattern=r"_(conf)",
         cast=lambda x: "Depth Confidence" if x == "conf" else "",
-        default="No Depth Confidence",
+        default="",
     ),
     Param(name="choice", pattern=r"(vggt)|(colmap)|(gt)_outputs", cast=str),
     Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
@@ -131,7 +163,12 @@ regexes = [
     ),
     Param(name="camera_src", pattern=r"_(colmapcams)|(vggtcams)|(gtcams)", cast=str, default=None),
     Param(name="pcd_src", pattern=r"_(colmappcd)|(vggtpcd)|(gtpcd)|(bothpcd)", cast=str, default=None),
-    Param(name="align_mode", pattern=r"_(amlocal)|(amglobal)", cast=lambda x: "Local Alignment" if x == "amlocal" else "Global Alignment", default=None),
+    Param(
+        name="align_mode",
+        pattern=r"_(amlocal)|(amglobal)",
+        cast=lambda x: "Local Alignment" if x == "amlocal" else "Global Alignment",
+        default=None,
+    ),
 ]
 
 
@@ -290,6 +327,7 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "val_step": int(filename.split("val_step")[-1].split(".json")[0]),
         "eval_rte": data.get("eval_rte"),
         "eval_rre": data.get("eval_rre"),
+        "raw_metrics": data.get("raw_metrics"),
     }
 
     if parsed_data["psnr"] is not None and parsed_data["lpips"] is not None and parsed_data["ssim"] is not None:
@@ -412,7 +450,7 @@ def plot_metric(
             plot_df = df.copy()
             unique_base = sorted(plot_df[label_col_check].fillna(0.0).unique())
             rank_map = {val: i for i, val in enumerate(unique_base)}
-            
+
             if x != label_col_check:
                 jitter = plot_df[x] - plot_df[label_col_check]
                 plot_df[x] = plot_df[label_col_check].fillna(0.0).map(rank_map) + jitter
@@ -913,10 +951,14 @@ def _process_single_render(
     images = []
     # Grab only the first image for this validation step
     render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg")))
+
     if not render_files:
         return images
 
     first_render = render_files[0]
+    depth_factors = row.get("raw_metrics", {}).get("depth_factor", [])
+    depth_factor = depth_factors[0] if depth_factors else None
+
     try:
         img = Image.open(first_render).convert("RGB")
 
@@ -924,15 +966,38 @@ def _process_single_render(
 
         # img is composed of 4 parts.
         # gt, predicted, difference and blended all horizontally
-        gt_img = img.crop((0, 0, w // 4, h))
-        pred_img = img.crop((w // 4, 0, w // 2, h))
-        diff_img = img.crop((w // 2, 0, 3 * w // 4, h))
-        # blended_img = img.crop((3 * w // 4, 0, w, h))
+
+        def divide_img(im: Image.Image, splits: int = 4) -> list[Image.Image]:
+            w, h = im.size
+            width = w // splits
+            height = h
+            images = []
+            for i in range(splits):
+                left = i * width
+                right = (i + 1) * width
+                images.append(im.crop((left, 0, right, height)))
+            return images
+
+        if depth_factor is not None:
+            # There is an extra column for depth
+            gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
+            depth = Image.fromarray(np_rgb(np.array(depth).mean(axis=-1)))
+        else:
+            gt_img, pred_img, _, _ = divide_img(img, splits=4)
+            depth = None
 
         # TODO Decide if we want to do one of these
         # Paste a small version of the diff img in the bottom left corner of the pred_img
         # diff_img = diff_img.resize((diff_img.width // 4, diff_img.height // 4))
         # pred_img.paste(diff_img, (0, h - diff_img.height))
+
+        if depth is not None:
+            # depth = depth.resize((depth.width // 3, depth.height // 3))
+            # pred_img.paste(depth, (0, pred_img.height - depth.height))
+            w, h = pred_img.size
+            depth = depth.crop((w // 2, 0, w, h))
+            pred_img.paste(depth, (w // 2, 0))
+
 
         # Crop half the image on the right and paste it
         # w, h = pred_img.size
@@ -1047,11 +1112,7 @@ def create_render_figure(
             shutil.copy2(out_pdf, latest_render_pdf)
             print("Latest copy saved:", Path(latest_render_pdf))
 
-            latex_caption = (
-                f"{title} ({str(dataset_name).title()})."
-                if title
-                else f"{prefix} - {dataset_name}."
-            )
+            latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
             latex_label = (
                 f"fig:renders_{experiment_name}_{dataset_name}"
                 if experiment_name
@@ -1308,7 +1369,11 @@ def plot_graph(
 
         if handles_dict:
             processed_labels = [
-                l.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT").replace("combined", "Combined") for l in handles_dict.keys()
+                l.replace("colmap", "COLMAP")
+                .replace("vggt", "VGGT")
+                .replace("gt", "GT")
+                .replace("combined", "Combined")
+                for l in handles_dict.keys()
             ]
 
             handles = list(handles_dict.values())
@@ -1344,7 +1409,11 @@ def plot_graph(
         for i in range(len(axes)):
             handles, labels = axes[i].get_legend_handles_labels()
             processed_labels = [
-                label.replace("colmap", "COLMAP").replace("vggt", "VGGT").replace("gt", "GT").replace("combined", "Combined") for label in labels
+                label.replace("colmap", "COLMAP")
+                .replace("vggt", "VGGT")
+                .replace("gt", "GT")
+                .replace("combined", "Combined")
+                for label in labels
             ]
             if handles:
                 axes[i].legend(handles=handles, labels=processed_labels, markerscale=1.0)
@@ -1533,7 +1602,9 @@ def plot_table(
 
     # Format method names for presentation (feature from plot_graph)
     if "choice" in df_table.columns:
-        df_table["choice"] = df_table["choice"].replace({"colmap": "COLMAP", "vggt": "VGGT", "gt": "GT", "combined": "Combined"})
+        df_table["choice"] = df_table["choice"].replace(
+            {"colmap": "COLMAP", "vggt": "VGGT", "gt": "GT", "combined": "Combined"}
+        )
 
     # Sort the dataframe
     sort_cols = []
