@@ -93,7 +93,7 @@ regexes = [
     Param(name="seed", pattern=r"_s(\d+)", cast=int),
     Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
     Param(name="num_points", pattern=r"_p(\d+)", cast=int),
-    Param(name="sampling_mode", pattern=r"_(voxels)|(confidence)|(random)|(ba)|(vox3)", cast=str),
+    Param(name="sampling_mode", pattern=r"_(ba)|(voxels)|(confidence)|(random)|(vox3)", cast=str),
     Param(name="image_mode", pattern=r"_(shuffle)|(distributed)|(mfps)|(farthestpose)", cast=str, default=""),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default=""),
@@ -169,6 +169,12 @@ regexes = [
         name="align_mode",
         pattern=r"_(amlocal)|(amglobal)",
         cast=lambda x: "Local Alignment" if x == "amlocal" else "Global Alignment",
+        default=None,
+    ),
+    Param(
+        name="shared_camera",
+        pattern=r"_(sharedcam)",
+        cast=lambda x: "Shared Cam" if x == "sharedcam" else "",
         default=None,
     ),
 ]
@@ -959,6 +965,7 @@ def _process_single_render(
     folder_name: str,
     x_axis: str | None = None,
     last_row: bool = False,
+    show_depth: bool = False,  # TODO integrate properly
 ):
     images = []
     # Grab only the first image for this validation step
@@ -1003,7 +1010,7 @@ def _process_single_render(
         # diff_img = diff_img.resize((diff_img.width // 4, diff_img.height // 4))
         # pred_img.paste(diff_img, (0, h - diff_img.height))
 
-        if depth is not None:
+        if depth is not None and show_depth:
             # depth = depth.resize((depth.width // 3, depth.height // 3))
             # pred_img.paste(depth, (0, pred_img.height - depth.height))
             w, h = pred_img.size
@@ -1306,15 +1313,15 @@ def plot_graph(
 
     # TODO Make this a parameter for which metrics to use
     metrics_config = [
-        {"y": "rre", "title": "RRE", "ylabel": "Degrees ↓", "direction": "↓", "ylog": True},
-        {"y": "rte", "title": "RTE", "ylabel": "Norm. Units ↓", "direction": "↓"},
-        {"y": "psnr", "title": "PSNR", "ylabel": "dB ↑", "direction": "↑"},
-        {"y": "lpips", "title": "LPIPS", "ylabel": "Score ↓", "direction": "↓"},
-        {"y": "ssim", "title": "SSIM", "ylabel": "Score ↑", "direction": "↑"},
-        {"y": "quality", "title": "Composite Quality", "ylabel": "Score ↑", "direction": "↑"},
+        {"y": "rre", "title": "RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
+        {"y": "rte", "title": "RTE ↓", "ylabel": "Norm. Units", "direction": "↓"},
+        {"y": "psnr", "title": "PSNR ↑", "ylabel": "dB", "direction": "↑"},
+        {"y": "lpips", "title": "LPIPS ↓", "ylabel": "Score", "direction": "↓"},
+        {"y": "ssim", "title": "SSIM ↑", "ylabel": "Score", "direction": "↑"},
+        {"y": "quality", "title": "Composite Quality ↑", "ylabel": "Score", "direction": "↑"},
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count", "direction": "↓"},
-        {"y": "eval_rre", "title": "Validation Step RRE", "ylabel": "Degrees ↓", "direction": "↓", "ylog": True},
-        {"y": "eval_rte", "title": "Validation Step RTE", "ylabel": "Norm. Units ↓", "direction": "↓"},
+        {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
+        {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
