@@ -75,7 +75,12 @@ class COLMAPProfiling(TypedDict):
 
 
 def run_colmap_pipeline(
-    base_out: str, images_path: str, db_path: str, sparse_path: str, low_view_count: bool = False
+    base_out: str,
+    images_path: str,
+    db_path: str,
+    sparse_path: str,
+    low_view_count: bool = False,
+    shared_camera: bool = False,
 ) -> COLMAPProfiling:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
@@ -87,6 +92,10 @@ def run_colmap_pipeline(
     t1 = time.time()
 
     passed = True
+
+    feature_extractor_args = [COLMAP, "feature_extractor", "--database_path", db_path, "--image_path", images_path]
+    if shared_camera:
+        feature_extractor_args.extend(["--ImageReader.single_camera", "1"])
 
     matcher_args = [COLMAP, "exhaustive_matcher", "--database_path", db_path]
     if low_view_count:
@@ -133,11 +142,7 @@ def run_colmap_pipeline(
             ]
         )
 
-    passed = (
-        run_command([COLMAP, "feature_extractor", "--database_path", db_path, "--image_path", images_path])
-        and run_command(matcher_args)
-        and run_command(mapper_args)
-    )
+    passed = run_command(feature_extractor_args) and run_command(matcher_args) and run_command(mapper_args)
     total_time = time.time() - t1
 
     monitor.stop()
@@ -158,6 +163,7 @@ def run_vggt_pipeline(
     num_points: int = 100000,
     camera_type: CAMERA_TYPE = "SIMPLE_PINHOLE",
     save_conf_as_errors: bool = False,
+    shared_camera: bool = False,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
@@ -170,6 +176,7 @@ def run_vggt_pipeline(
         num_points=num_points,
         cache_dir=cache_dir,
         save_conf_as_errors=save_conf_as_errors,
+        shared_camera=shared_camera,
     )
 
 
@@ -294,17 +301,41 @@ def get_image_list(
     return all_images
 
 
-def check_files(base_output: Path, all_images: list[str], require_depth_conf: bool) -> bool:
+def check_files(base_output: Path, all_images: list[str], require_depth_conf: bool, shared_camera: bool) -> bool:
+    if (
+        not os.path.exists(base_output)
+        or os.path.exists(base_output / "images")
+        or os.path.exists(base_output / "sparse")
+    ):
+        return False
+    valid = True
+
     images_path = Path(base_output) / "images"
     num_images = len(all_images)
     existing_images = os.listdir(images_path)
 
-    valid = True
+    found_recon = False
+    try:
+        colmap_pcd: pycolmap.Reconstruction = load_point_cloud(base_output / "sparse")
+        colmap_image_names = [image.name for image in colmap_pcd.images.values()]
+        num_cameras = len(colmap_pcd.cameras)
+        found_recon = True
+    except Exception:
+        colmap_image_names = []
+        num_cameras = 0
+
+    if (shared_camera and num_cameras != 1) or (not shared_camera and num_cameras != len(colmap_image_names)):
+        print("Invalid number of cameras found in COLMAP database. Forcing reconstruction.")
+        valid = False
 
     if len(set(all_images) & set(existing_images)) != num_images:
         print("Invalid images found in directory. Forcing reconstruction.")
         for image in existing_images:
             os.remove(Path(images_path) / image)
+        valid = False
+
+    if len(set(all_images) | set(colmap_image_names)) > num_images and found_recon:
+        print("Invalid images found in COLMAP database. Forcing reconstruction.")
         valid = False
 
     if require_depth_conf:
@@ -353,6 +384,7 @@ def run_reconstruction(
     colmap_mode: COLMAP_MODE = "default",
     require_depth_conf: bool = False,
     save_conf_as_errors: bool = False,
+    shared_camera: bool = False,
 ):
     name = name.strip("/")
 
@@ -362,6 +394,11 @@ def run_reconstruction(
         cache_parts.append(f"n{num_images}")
     cache_parts.append(f"s{seed}")
     cache_parts.append(image_mode)
+
+    if choice == "colmap":
+        if shared_camera:
+            cache_parts.append("sharedcam")
+
     if copy_mode is not None:
         cache_parts.append(copy_mode)
 
@@ -391,6 +428,10 @@ def run_reconstruction(
 
     extra_parts.append(image_mode)
 
+    if choice == "colmap" or sampling_mode == "ba":
+        if shared_camera:
+            extra_parts.append("sharedcam")
+
     if copy_mode is not None:
         extra_parts.append(copy_mode)
 
@@ -401,9 +442,6 @@ def run_reconstruction(
     images_path = os.path.join(base_out, "images")
     db_path = os.path.join(base_out, "database.db")
 
-    os.makedirs(sparse_path, exist_ok=True)
-    os.makedirs(images_path, exist_ok=True)
-
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
 
@@ -413,8 +451,13 @@ def run_reconstruction(
 
     num_images = len(all_images)
 
-    if not check_files(Path(base_out), all_images, require_depth_conf=require_depth_conf and choice == "vggt"):
+    if not check_files(Path(base_out), all_images, require_depth_conf=require_depth_conf and choice == "vggt", shared_camera=shared_camera):
+        if os.path.exists(base_out):
+            shutil.rmtree(base_out)
         force = True
+
+    os.makedirs(sparse_path, exist_ok=True)
+    os.makedirs(images_path, exist_ok=True)
 
     if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
         print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
@@ -444,11 +487,23 @@ def run_reconstruction(
 
     if choice == "colmap":
         profiling = run_colmap_pipeline(
-            base_out, images_path, db_path, sparse_path, low_view_count=colmap_mode == "relaxed"
+            base_out,
+            images_path,
+            db_path,
+            sparse_path,
+            low_view_count=colmap_mode == "relaxed",
+            shared_camera=shared_camera,
         )
     elif choice == "vggt":
         profiling = run_vggt_pipeline(
-            base_out, cache_dir, conf_thres_value, sampling_mode, num_points, camera_type, save_conf_as_errors
+            base_out,
+            cache_dir,
+            conf_thres_value,
+            sampling_mode,
+            num_points,
+            camera_type,
+            save_conf_as_errors,
+            shared_camera=shared_camera,
         )
     else:
         raise ValueError("Invalid choice")
@@ -488,6 +543,7 @@ class Args:
     force: bool = False
     require_depth_conf: bool = False
     save_conf_as_errors: bool = False
+    shared_camera: bool = False
 
 
 def main(args: Args):
@@ -507,6 +563,7 @@ def main(args: Args):
         colmap_mode=args.colmap_mode,
         require_depth_conf=args.require_depth_conf,
         save_conf_as_errors=args.save_conf_as_errors,
+        shared_camera=args.shared_camera,
     )
 
 
@@ -564,6 +621,7 @@ if __name__ == "__main__":
     )
     single_parser.add_argument("--require_depth_conf", action="store_true", help="Require depth confidence map")
     single_parser.add_argument("--save_conf_as_errors", action="store_true", help="Save depth confidence map as errors")
+    single_parser.add_argument("--shared_camera", action="store_true", help="Share cameras between images")
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(
