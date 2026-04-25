@@ -12,6 +12,7 @@ from cam_utils import (
     build_matrix,
     c2w_to_cfw,
     cfw_to_c2w,
+    cfw_to_w2c,
     decompose_matrix,
     get_metrics,
     mat_to_quat,
@@ -19,6 +20,7 @@ from cam_utils import (
     umeyama_alignment,
     verify_look_at_origin,
 )
+from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap_wo_track
 
 
 def get_common_names(rec_cam: pycolmap.Reconstruction, rec_pts: pycolmap.Reconstruction):
@@ -210,13 +212,14 @@ def swap_and_align(
     output_path: Path,
     use_both_pcds: bool = False,
     align_each_point_set: bool = False,
+    keep_backup_cams: bool = False,
 ):
     """
-    This migrates the cameras from the camera_source_path to the point_source_path in place.
-    It then transforms the points in point_source_path to match the cameras.
-
-    rec_pts will contain cameras and points in the coordinate frame of rec_cam.
+    This migrates the cameras from the camera_source_path to the point_source_path.
+    It then transforms the points in point_source_path to match the cameras and rebuilds
+    the reconstruction using VGGT's batched Numpy matrix tools.
     """
+
     print(f"Loading reconstructions from {camera_source_path} and {point_source_path}")
 
     rec_cam = load_cameras(camera_source_path)
@@ -232,19 +235,6 @@ def swap_and_align(
     cam_poses = get_poses(rec_cam)
     keys = sorted(pts_poses.keys() & cam_poses.keys())
 
-    # for c2w in cam_poses.values():
-    #     verify = verify_look_at_origin(c2w, is_opencv=True)
-    #     assert verify["is_pointing_at_origin"]
-
-    # for i, c2w in enumerate(pts_poses.values()):
-    #     translation, rotation_matrix = decompose_matrix(c2w)
-    #     translation = s * (R @ translation) + t
-    #     rotation_matrix = R @ rotation_matrix
-    #     c2w = build_matrix(translation, rotation_matrix)
-
-    #     verify = verify_look_at_origin(c2w, is_opencv=True)
-    #     assert verify["is_pointing_at_origin"]
-
     pts_cam_positions = np.array([s * R @ pts_poses[k][:3, 3] + t for k in keys])
     rec_cam_positions = np.array([cam_poses[k][:3, 3] for k in keys])
 
@@ -252,70 +242,177 @@ def swap_and_align(
 
     img_to_img_map = {image.name: image for image in rec_cam.images.values()}
     img_to_cam_map = {image.name: rec_cam.cameras[image.camera_id] for image in rec_cam.images.values()}
-    pts_cam_id_to_img_map = {img.camera_id: img.name for img in rec_pts.images.values()}
 
     transformed_point_ids = set()
 
+    # Step 1: In-place modify rec_pts to inherit accurate poses and calculate points
     for image_id, image in rec_pts.images.items():
+        img_name = image.name
+
+        if img_name in img_to_img_map:
+            cam = rec_pts.cameras[image.camera_id]
+            src_cam = img_to_cam_map[img_name]
+            src_image = img_to_img_map[img_name]
+
+            orig_t, orig_R = cfw_to_c2w(image.cam_from_world)
+            new_t, new_R = cfw_to_c2w(src_image.cam_from_world)
+
+            cam.model = src_cam.model
+            cam.width = src_cam.width
+            cam.height = src_cam.height
+            cam.params = src_cam.params
+
+            image.cam_from_world.translation = src_image.cam_from_world.translation
+            image.cam_from_world.rotation.quat = src_image.cam_from_world.rotation.quat
+
+            if align_each_point_set:
+                for p2d in image.points2D:
+                    if p2d.has_point3D():
+                        pid = p2d.point3D_id
+                        if pid not in transformed_point_ids and pid in rec_pts.points3D:
+                            p3d = rec_pts.points3D[pid]
+                            X_cam = orig_R.T @ (p3d.xyz - orig_t)
+                            p3d.xyz = s * (new_R @ X_cam) + new_t
+                            transformed_point_ids.add(pid)
+
+        elif keep_backup_cams:
+            orig_t, orig_R = cfw_to_c2w(image.cam_from_world)
+            new_t = s * (R @ orig_t) + t
+            new_R = R @ orig_R
+
+            aligned_cfw = c2w_to_cfw(new_t, new_R)
+            image.cam_from_world.translation = aligned_cfw.translation
+            image.cam_from_world.rotation.quat = aligned_cfw.rotation.quat
+
+    # Step 2: Extract aligned data into Numpy arrays for VGGT's array-to-colmap function
+    extrinsics_list = []
+    intrinsics_list = []
+    image_names = []
+    image_id_to_fidx = {}
+
+    image_size = np.array([1000, 1000])  # Fallback
+    cam_type = "SIMPLE_PINHOLE"
+    fidx = 0
+
+    for image_id, image in rec_pts.images.items():
+        img_name = image.name
+        keep = (img_name in img_to_img_map) or keep_backup_cams
+        if not keep:
+            continue
+
+        image_id_to_fidx[image_id] = fidx
+        image_names.append(img_name)
+
+        # Extrinsics: VGGT expects W2C format
+        w2c_t, w2c_R = cfw_to_w2c(image.cam_from_world)
+        ext = np.zeros((3, 4))
+        ext[:3, :3] = w2c_R
+        ext[:3, 3] = w2c_t
+        extrinsics_list.append(ext)
+
+        # Intrinsics
         cam = rec_pts.cameras[image.camera_id]
-        cam_id = cam.camera_id
-        if cam_id not in pts_cam_id_to_img_map:
-            continue
+        K = np.eye(3)
+        cam_model_str = str(cam.model).split(".")[-1]
+        cam_type = cam_model_str
+        image_size = np.array([cam.width, cam.height])
 
-        img_name = pts_cam_id_to_img_map[cam_id]
-        if img_name not in img_to_cam_map:
-            continue
+        if cam_model_str in ["PINHOLE", "OPENCV", "OPENCV_FISHEYE"]:
+            K[0, 0] = cam.params[0]
+            K[1, 1] = cam.params[1]
+            K[0, 2] = cam.params[2]
+            K[1, 2] = cam.params[3]
+        else:
+            K[0, 0] = cam.params[0]
+            K[1, 1] = cam.params[0]
+            K[0, 2] = cam.params[1]
+            K[1, 2] = cam.params[2]
+        intrinsics_list.append(K)
+        fidx += 1
 
-        src_cam = img_to_cam_map[img_name]
-        src_image = img_to_img_map[img_name]
+    extrinsics = np.stack(extrinsics_list) if extrinsics_list else np.empty((0, 3, 4))
+    intrinsics = np.stack(intrinsics_list) if intrinsics_list else np.empty((0, 3, 3))
 
-        orig_t, orig_R = cfw_to_c2w(image.cam_from_world)
-        new_t, new_R = cfw_to_c2w(src_image.cam_from_world)
+    points3d = []
+    points_rgb = []
+    points_xyf = []
+    points_errors = []
 
-        # Copy the intrinsics from src_cam to cam and the extrinsics from src_image to image
-        src_cam.camera_id = cam.camera_id
-        rec_pts.cameras[image.camera_id] = src_cam
-        image.cam_from_world.translation = src_image.cam_from_world.translation
-        image.cam_from_world.rotation.quat = src_image.cam_from_world.rotation.quat
-        # Transform the specific points attached to this camera to preserve local geometry
-        if align_each_point_set:
-            for p2d in image.points2D:
-                if p2d.has_point3D():
-                    pid = p2d.point3D_id
-                    if pid not in transformed_point_ids and pid in rec_pts.points3D:
-                        p3d = rec_pts.points3D[pid]
-                        # Convert to local camera frame, then back to world using the new camera pose
-                        X_cam = orig_R.T @ (p3d.xyz - orig_t)
-                        p3d.xyz = s * (new_R @ X_cam) + new_t
-                        transformed_point_ids.add(pid)
+    for pid, p in rec_pts.points3D.items():
+        if s > 0.0 and pid not in transformed_point_ids:
+            p.xyz = s * (R @ p.xyz) + t
 
-    # Rotate, scale and translate remaining points to match src coord frame
-    if s > 0.0:
-        for pid, p in rec_pts.points3D.items():
-            if pid not in transformed_point_ids:
-                p.xyz = s * (R @ p.xyz) + t
+        # Get first valid observation for this point to link to frames (VGGT ignores full tracks)
+        valid_el = None
+        for el in p.track.elements:
+            if el.image_id in image_id_to_fidx:
+                valid_el = el
+                break
 
-    # If requested, merge points from the camera source (already in the target coordinate frame)
+        if valid_el is not None:
+            points3d.append(p.xyz)
+            points_rgb.append(p.color)
+            points_errors.append(p.error)
+
+            fidx_val = image_id_to_fidx[valid_el.image_id]
+            img = rec_pts.images[valid_el.image_id]
+            p2d_xy = img.points2D[valid_el.point2D_idx].xy
+            points_xyf.append([p2d_xy[0], p2d_xy[1], fidx_val])
+
+    points3d = np.array(points3d) if points3d else np.empty((0, 3))
+    points_rgb = np.array(points_rgb) if points_rgb else np.empty((0, 3))
+    points_xyf = np.array(points_xyf) if points_xyf else np.empty((0, 3))
+    points_errors = np.array(points_errors) if points_errors else np.empty((0,))
+
+    # VGGT natively supports a narrow range of PyCOLMAP camera types
+    if cam_type not in ["PINHOLE", "SIMPLE_PINHOLE", "SIMPLE_RADIAL"]:
+        cam_type = "PINHOLE"
+
+    print("Building new reconstruction via VGGT batch_np_matrix_to_pycolmap_wo_track...")
+    new_recon = batch_np_matrix_to_pycolmap_wo_track(
+        points3d=points3d,
+        points_xyf=points_xyf,
+        points_rgb=points_rgb,
+        extrinsics=extrinsics,
+        intrinsics=intrinsics,
+        image_size=image_size,
+        shared_camera=False,
+        camera_type=cam_type,
+        points_errors=points_errors,
+    )
+
+    # VGGT creates 1:1 camera-to-image mappings where camera_id = fidx + 1
+    for orig_image_id, fidx_val in image_id_to_fidx.items():
+        new_cam_id = fidx_val + 1
+
+        # Get the perfect camera object we already modified earlier in the script
+        orig_cam = rec_pts.cameras[rec_pts.images[orig_image_id].camera_id]
+
+        # Overwrite VGGT's generic camera with our exact model, width, height, and all params
+        restored_cam = pycolmap.Camera(
+            camera_id=new_cam_id,
+            model=orig_cam.model,
+            width=orig_cam.width,
+            height=orig_cam.height,
+            params=orig_cam.params,
+        )
+        new_recon.cameras[new_cam_id] = restored_cam
+
+    # Restore image names (VGGT overrides them with 'image_{fidx}')
+    for f, name in enumerate(image_names):
+        if (f + 1) in new_recon.images:
+            new_recon.images[f + 1].name = name
+
     if use_both_pcds:
         print("Merging points from both reconstructions...")
         for p in rec_cam.points3D.values():
-            # Generate a new unique ID to avoid collisions
-            new_id = rec_pts.add_point3D(p.xyz, pycolmap.Track(), p.color)
+            new_recon.add_point3D(p.xyz, pycolmap.Track(), p.color)
 
     output_path.mkdir(parents=True, exist_ok=True)
-    rec_pts.write(output_path)
+    new_recon.write(output_path)
     print(f"Reconstruction exported to {output_path}")
 
-    common_names = get_common_names(rec_cam, rec_pts)[0]
-
-    # all_recons = [rec_cam, rec_pts, orig_rec_cam, orig_rec_pts]
-    # names = ["rec_cam", "rec_pts", "orig_rec_cam", "orig_rec_pts"]
-    # for i, rec_1 in enumerate(all_recons):
-    #     for j, rec_2 in enumerate(all_recons):
-    #         print(f"Comparing {names[i]} and {names[j]}")
-    #         rre_list, rte_list = get_metrics(get_poses(rec_1), get_poses(rec_2), alignment=(s, R, t))
-    #         print(f"Mean RRE: {np.mean(rre_list):.4f}")
-    #         print(f"Mean RTE: {np.mean(rte_list):.4f}")
+    common_names = get_common_names(rec_cam, new_recon)[0]
 
     print("Before alignment")
     rre_list, rte_list = get_metrics(get_poses(orig_rec_cam), get_poses(orig_rec_pts))
@@ -328,11 +425,11 @@ def swap_and_align(
     print(f"Mean RTE: {np.mean(rte_list):.4f}")
 
     print("After swap (these should be 0)")
-    rre_list, rte_list = get_metrics(get_poses(rec_pts), get_poses(orig_rec_cam))
+    rre_list, rte_list = get_metrics(get_poses(new_recon), get_poses(orig_rec_cam))
     print(f"Mean RRE: {np.mean(rre_list):.4f}")
     print(f"Mean RTE: {np.mean(rte_list):.4f}")
 
-    save_cameras_json(rec_pts, output_path / "copied_cameras.json", common_names=common_names)
+    save_cameras_json(new_recon, output_path / "copied_cameras.json", common_names=common_names)
     save_cameras_json(orig_rec_cam, output_path / "original_cameras.json", common_names=common_names)
     save_cameras_json(
         orig_rec_pts, output_path / "aligned_cameras.json", common_names=common_names, alignment=(s, R, t)
@@ -353,6 +450,11 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, points associated with each camera will be individually aligned to preserve local geometry. Otherwise, a single global transform is applied to all points.",
     )
+    parser.add_argument(
+        "--keep_backup_cams",
+        action="store_true",
+        help="If set, cameras missing from the camera_source will be kept and transformed using the global alignment. Otherwise they are removed.",
+    )
     parser.add_argument("--output_dir", type=str, default="aligned_swap", help="Output directory.")
 
     args = parser.parse_args()
@@ -364,6 +466,7 @@ if __name__ == "__main__":
         Path(args.output_dir) / "sparse",
         use_both_pcds=args.use_both_pcds,
         align_each_point_set=args.align_each_point_set,
+        keep_backup_cams=args.keep_backup_cams,
     )
     swap_t2 = time.time()
 

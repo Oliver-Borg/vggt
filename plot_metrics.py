@@ -177,6 +177,12 @@ regexes = [
         cast=lambda x: "Shared Cam" if x == "sharedcam" else "",
         default=None,
     ),
+    Param(
+        name="keep_backup_cams",
+        pattern=r"_(fallbackcams)",
+        cast=lambda x: "Fallback Cams" if x == "fallbackcams" else "",
+        default=None,
+    ),
 ]
 
 
@@ -321,7 +327,11 @@ def load_metrics_to_df(
 def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float]:
     """Extracts RRE and RTE from SfM json."""
     if "metrics" in data and "mean_rre_deg" in data["metrics"]:
-        return {"rre": data["metrics"]["mean_rre_deg"], "rte": data["metrics"]["mean_rte"]}
+        return {
+            "rre": data["metrics"]["mean_rre_deg"],
+            "rte": data["metrics"]["mean_rte"],
+            "num_aligned": data["metrics"]["num_aligned"]
+        }
     return {}
 
 
@@ -1322,6 +1332,7 @@ def plot_graph(
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count", "direction": "↓"},
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓"},
+        {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}

@@ -302,10 +302,10 @@ def get_image_list(
 
 
 def check_files(base_output: Path, all_images: list[str], require_depth_conf: bool, shared_camera: bool) -> bool:
-    if (
-        not os.path.exists(base_output)
-        or os.path.exists(base_output / "images")
-        or os.path.exists(base_output / "sparse")
+    if not (
+        os.path.exists(base_output)
+        and os.path.exists(base_output / "images")
+        and os.path.exists(base_output / "sparse")
     ):
         return False
     valid = True
@@ -451,10 +451,9 @@ def run_reconstruction(
 
     num_images = len(all_images)
 
-    if not check_files(Path(base_out), all_images, require_depth_conf=require_depth_conf and choice == "vggt", shared_camera=shared_camera):
+    if force or not check_files(Path(base_out), all_images, require_depth_conf=require_depth_conf and choice == "vggt", shared_camera=shared_camera):
         if os.path.exists(base_out):
             shutil.rmtree(base_out)
-        force = True
 
     os.makedirs(sparse_path, exist_ok=True)
     os.makedirs(images_path, exist_ok=True)
