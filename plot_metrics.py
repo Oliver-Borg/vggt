@@ -330,7 +330,7 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float]:
         return {
             "rre": data["metrics"]["mean_rre_deg"],
             "rte": data["metrics"]["mean_rte"],
-            "num_aligned": data["metrics"]["num_aligned"]
+            "num_aligned": data["metrics"]["num_aligned"],
         }
     return {}
 
@@ -975,7 +975,8 @@ def _process_single_render(
     folder_name: str,
     x_axis: str | None = None,
     last_row: bool = False,
-    show_depth: bool = False,  # TODO integrate properly
+    show_depth: bool = False,
+    show_gt: bool = False,
 ):
     images = []
     # Grab only the first image for this validation step
@@ -1010,7 +1011,12 @@ def _process_single_render(
         if depth_factor is not None:
             # There is an extra column for depth
             gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
-            depth = Image.fromarray(np_rgb(np.array(depth).mean(axis=-1)))
+            depth = np.array(depth).mean(axis=-1)
+            depth *= depth_factor
+            median_depth = np.median(np.array(depth))
+            depth = depth / median_depth / 10
+            depth = np.clip(depth, 0.0, 1.0)
+            depth = Image.fromarray(np_rgb(depth))
         else:
             gt_img, pred_img, _, _ = divide_img(img, splits=4)
             depth = None
@@ -1054,7 +1060,7 @@ def _process_single_render(
         pred_img = add_text_to_image(pred_img, label_text, 48)
         images.append(pred_img)
 
-        if last_row:
+        if last_row and show_gt:
             gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
             images.append(gt_img)
 
@@ -1095,6 +1101,8 @@ def create_render_figure(
     prefix: str | None = None,
     x_axis: str | None = None,
     max_cols: int = 3,
+    show_depth: bool = False,
+    show_gt: bool = False,
 ):
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
@@ -1114,7 +1122,16 @@ def create_render_figure(
             if render_src_dir.exists():
                 folder_name = p.parents[1].name
 
-                processed_images = _process_single_render(row, render_src_dir, p, folder_name, x_axis, last_row)
+                processed_images = _process_single_render(
+                    row,
+                    render_src_dir,
+                    p,
+                    folder_name,
+                    x_axis,
+                    last_row,
+                    show_depth,
+                    show_gt,
+                )
                 images_to_stack.extend(processed_images)
 
     if images_to_stack:
@@ -1180,6 +1197,8 @@ def plot_graph(
     print_title: bool = False,
     split_choice: bool = False,
     max_render_cols: int = 3,
+    show_depth: bool = False,
+    show_gt: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -1219,6 +1238,8 @@ def plot_graph(
         sort_cols.append("choice")
     elif "method" in df.columns:
         sort_cols.append("method")
+
+    sort_cols.append(x_axis)
 
     if sort_cols:
         df = df.sort_values(by=sort_cols)
@@ -1554,6 +1575,8 @@ def plot_graph(
                 prefix=prefix,
                 x_axis=x_axis,
                 max_cols=max_render_cols,
+                show_depth=show_depth,
+                show_gt=show_gt,
             )
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
