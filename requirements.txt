@@ -6,3 +6,6 @@ huggingface_hub
 einops
 safetensors
 open3d
+accelerate
+xformers
+opencv-python

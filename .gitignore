@@ -152,6 +152,7 @@ data/
 colmap_outputs/
 vggt_outputs/
 gt_outputs/
+combined_outputs/
 vggt_outputs_backup/
 test/
 plots/
