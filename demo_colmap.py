@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import json
 import random
 import time
 from typing import Literal, TypedDict
@@ -16,6 +17,7 @@ import torch
 import torch.nn.functional as F
 
 from combine_clouds import save_cameras_json
+from reconstruct_args import SAMPLING_MODE
 from vggt.dependency.pycolmap_to_np import extract_poses_from_reconstruction
 
 # Configure CUDA settings
@@ -47,8 +49,6 @@ from vggt.utils.image_utils import np_rgb
 # TODO: add support for radial distortion, which needs extra_params
 # TODO: test with more cases
 # TODO: test different camera types
-
-SAMPLING_MODE = Literal["random", "confidence", "voxels", "none", "ba", "vox3"]
 
 
 def parse_args():
@@ -148,6 +148,7 @@ class VGGTProfiling(TypedDict):
     point_cloud_processing_t: float
     saving_t: float
 
+
 def save_depths(path: str, depths: np.ndarray, raw_confs: np.ndarray, viz_confs: np.ndarray, camera_names: list[str]):
     # Save the raw depth and confidence maps for visualization
     b = depths.shape[0]
@@ -164,6 +165,7 @@ def save_depths(path: str, depths: np.ndarray, raw_confs: np.ndarray, viz_confs:
 
 model_cache = {}
 
+
 def load_model() -> VGGT:
     model_key = "vggt"
     if model_key in model_cache:
@@ -176,6 +178,67 @@ def load_model() -> VGGT:
     model = model.to(device)
     model_cache[model_key] = model
     return model
+
+
+def predict_tracks_with_cache(
+    images, conf, points_3d, masks, max_query_pts, query_frame_num, keypoint_extractor, fine_tracking, cache_dir, device
+):
+    track_cache_file = os.path.join(cache_dir, "tracks.pt")
+    track_config_file = os.path.join(cache_dir, "tracks_config.json")
+
+    track_config = {
+        "max_query_pts": max_query_pts,
+        "query_frame_num": query_frame_num,
+        "keypoint_extractor": keypoint_extractor,
+        "fine_tracking": fine_tracking,
+    }
+
+    load_cached_tracks = False
+    if track_cache_file and os.path.exists(track_cache_file) and os.path.exists(track_config_file):
+        try:
+            with open(track_config_file, "r") as f:
+                cached_config = json.load(f)
+            if cached_config == track_config:
+                load_cached_tracks = True
+        except Exception as e:
+            print(f"Warning: Failed to read track cache config: {e}")
+
+    if load_cached_tracks:
+        print(f"Loading cached tracks from {track_cache_file}")
+        cached_tracks = torch.load(track_cache_file, map_location=device)
+        pred_tracks = cached_tracks["pred_tracks"]
+        pred_vis_scores = cached_tracks["pred_vis_scores"]
+        pred_confs = cached_tracks["pred_confs"]
+        tracked_points_3d = cached_tracks["tracked_points_3d"]
+        tracked_points_rgb = cached_tracks["tracked_points_rgb"]
+    else:
+        pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb = predict_tracks(
+            images,
+            conf=conf,
+            points_3d=points_3d,
+            masks=masks,
+            max_query_pts=max_query_pts,
+            query_frame_num=query_frame_num,
+            keypoint_extractor=keypoint_extractor,
+            fine_tracking=fine_tracking,
+        )
+
+        if track_cache_file:
+            print(f"Saving tracks to {track_cache_file}")
+            torch.save(
+                {
+                    "pred_tracks": pred_tracks,
+                    "pred_vis_scores": pred_vis_scores,
+                    "pred_confs": pred_confs,
+                    "tracked_points_3d": tracked_points_3d,
+                    "tracked_points_rgb": tracked_points_rgb,
+                },
+                track_cache_file,
+            )
+            with open(track_config_file, "w") as f:
+                json.dump(track_config, f)
+
+    return pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb
 
 
 @profile
@@ -272,7 +335,9 @@ def run_vggt(
             model = load_model()
         model_load_t2 = time.time()
         model_alloc, model_res = model_vram_mb = get_gpu_stats()
-        print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
+        print(
+            f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB"
+        )
 
         image_load_t1 = time.time()
         # Get image paths and preprocess them
@@ -296,8 +361,10 @@ def run_vggt(
         # Warmup run
         warmup_t1 = time.time()
         extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
-        masks = F.interpolate(masks.to(torch.uint8), size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="nearest")
-        
+        masks = F.interpolate(
+            masks.to(torch.uint8), size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="nearest"
+        )
+
         masks = masks.cpu().numpy().transpose(0, 2, 3, 1)
         depth_conf[masks[..., 0] == 0] = 0.0
         orig_depth_conf = depth_conf.copy()
@@ -317,17 +384,20 @@ def run_vggt(
 
         if cache_file:
             print(f"Saving raw predictions to {cache_file}")
-            torch.save({
-                "images": images.cpu(),
-                "original_coords": original_coords.cpu(),
-                "extrinsic": extrinsic,
-                "intrinsic": intrinsic,
-                "depth_map": depth_map,
-                "depth_conf": depth_conf,
-                "orig_depth_conf": orig_depth_conf,
-                "masks": masks,
-                "base_image_path_list": base_image_path_list,
-            }, cache_file)
+            torch.save(
+                {
+                    "images": images.cpu(),
+                    "original_coords": original_coords.cpu(),
+                    "extrinsic": extrinsic,
+                    "intrinsic": intrinsic,
+                    "depth_map": depth_map,
+                    "depth_conf": depth_conf,
+                    "orig_depth_conf": orig_depth_conf,
+                    "masks": masks,
+                    "base_image_path_list": base_image_path_list,
+                },
+                cache_file,
+            )
 
     processing_t1 = time.time()
 
@@ -356,7 +426,7 @@ def run_vggt(
 
             # You can also change the pred_tracks to tracks from any other methods
             # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
-            pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb = predict_tracks(
+            pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb = predict_tracks_with_cache(
                 images,
                 conf=depth_conf,
                 points_3d=points_3d,
@@ -365,6 +435,8 @@ def run_vggt(
                 query_frame_num=query_frame_num,
                 keypoint_extractor="aliked+sp",
                 fine_tracking=fine_tracking,
+                cache_dir=cache_dir,
+                device=device,
             )
 
             torch.cuda.empty_cache()
@@ -433,7 +505,9 @@ def run_vggt(
         # (S, H, W, 3), with x, y coordinates and frame indices
         points_xyf = create_pixel_coordinate_grid(num_frames, height, width)
 
-        print(f"Confidence\tmin: {depth_conf.min():.1f}\tmax: {depth_conf.max():.1f}\tmean: {depth_conf.mean():.1f}. Normalizing...")
+        print(
+            f"Confidence\tmin: {depth_conf.min():.1f}\tmax: {depth_conf.max():.1f}\tmean: {depth_conf.mean():.1f}. Normalizing..."
+        )
 
         depth_conf = (depth_conf - depth_conf.min()) / (depth_conf.max() - depth_conf.min())
 
@@ -448,7 +522,9 @@ def run_vggt(
         elif sampling_mode == "voxels":
             conf_mask = uniform_limit_trues(conf_mask, max_points_for_colmap, points_3d, depth_conf)
         elif sampling_mode == "vox3":
-            conf_mask = uniform_limit_trues(conf_mask, max_points_for_colmap, points_3d, depth_conf, min_grid_occupancy=3)
+            conf_mask = uniform_limit_trues(
+                conf_mask, max_points_for_colmap, points_3d, depth_conf, min_grid_occupancy=3
+            )
 
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]
@@ -514,7 +590,13 @@ def run_vggt(
 
 
 def rename_colmap_recons_and_rescale_camera(
-    reconstruction, image_paths, original_coords, img_size, camera_type, shift_point2d_to_original_res=False, shared_camera=False
+    reconstruction,
+    image_paths,
+    original_coords,
+    img_size,
+    camera_type,
+    shift_point2d_to_original_res=False,
+    shared_camera=False,
 ):
     rescale_camera = True
 

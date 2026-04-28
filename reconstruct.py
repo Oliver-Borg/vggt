@@ -1,5 +1,4 @@
 import argparse
-from dataclasses import dataclass
 import datetime
 import json
 import os
@@ -10,7 +9,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Literal, TypedDict, get_args
+from typing import TypedDict, get_args
 import numpy as np
 from scipy.spatial.distance import cdist
 import torch
@@ -21,14 +20,8 @@ import pycolmap
 from cam_utils import get_poses
 from check_sparse import check_sparse_folder
 from combine_clouds import load_point_cloud
-from demo_colmap import VGGTProfiling, run_vggt, SAMPLING_MODE
-
-
-IMAGE_MODE = Literal["shuffle", "distributed", "mfps", "farthestpose"]
-COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
-CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
-COPY_MODE = Literal[None, "crop", "square", "tiles"]
-COLMAP_MODE = Literal["default", "relaxed"]  # , "interpolated" TODO
+from demo_colmap import VGGTProfiling, run_vggt
+from reconstruct_args import CAMERA_TYPE, COLMAP, COLMAP_MODE, COPY_MODE, IMAGE_MODE, SAMPLING_MODE, ReconstructArgs
 
 
 class GPUMonitor(threading.Thread):
@@ -372,101 +365,30 @@ def check_files(base_output: Path, all_images: list[str], require_depth_conf: bo
 
 
 def run_reconstruction(
-    name: str,
-    input_path: str,
-    choice: str,
-    num_images: int | None,
-    seed: int,
-    conf_thres_value: float,
-    force: bool,
-    sampling_mode: SAMPLING_MODE,
-    image_mode: IMAGE_MODE,
-    copy_mode: COPY_MODE,
-    camera_type: CAMERA_TYPE,
-    num_points: int = 100000,
-    colmap_mode: COLMAP_MODE = "default",
-    require_depth_conf: bool = False,
-    save_conf_as_errors: bool = False,
-    shared_camera: bool = False,
-    use_ba: bool = False,
-    max_ba_iterations: int = 50,
+    args: ReconstructArgs,
 ):
-    name = name.strip("/")
-
-    # Define cache directory based on params affecting raw predictions
-    cache_parts = []
-    if num_images:
-        cache_parts.append(f"n{num_images}")
-    cache_parts.append(f"s{seed}")
-    cache_parts.append(image_mode)
-
-    if choice == "colmap":
-        if shared_camera:
-            cache_parts.append("sharedcam")
-
-    if copy_mode is not None:
-        cache_parts.append(copy_mode)
-
-    cache_name = name + "_cache_" + "_".join(cache_parts)
-    cache_dir = f"./{choice}_outputs/{cache_name}"
-    os.makedirs(cache_dir, exist_ok=True)
-
-    extra_parts = []
-    if num_images:
-        extra_parts.append(f"n{num_images}")
-
-    extra_parts.append(f"s{seed}")
-
-    if choice == "vggt":
-        if sampling_mode != "ba":
-            extra_parts.append(f"c{conf_thres_value}")
-            extra_parts.append(f"p{num_points}")
-        else:
-            extra_parts.append(camera_type.lower().replace("simple_", "m"))
-
-        extra_parts.append(sampling_mode)
-
-        if save_conf_as_errors:
-            extra_parts.append("errconf")
-    elif choice == "colmap":
-        extra_parts.append(colmap_mode)
-
-    extra_parts.append(image_mode)
-
-    if use_ba and choice != "colmap":
-        extra_parts.append("useba")
-
-    if choice == "vggt" and (sampling_mode == "ba" or use_ba):
-        extra_parts.append(f"maxba{max_ba_iterations}")
-
-    if choice == "colmap" or sampling_mode == "ba" or use_ba:
-        if shared_camera:
-            extra_parts.append("sharedcam")
-
-    if copy_mode is not None:
-        extra_parts.append(copy_mode)
-
-    # name = f"{name}_s{seed}_c{conf_thres_value}_p{num_points}_{sampling_mode}"
-    name = name + "_" + "_".join(extra_parts)
-    base_out = f"./{choice}_outputs/{name}"
+    os.makedirs(args.cache_dir, exist_ok=True)
+    base_out = args.base_out
     sparse_path = os.path.join(base_out, "sparse")
     images_path = os.path.join(base_out, "images")
     db_path = os.path.join(base_out, "database.db")
 
+    input_path = args.input
+
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
 
-    pcd = load_point_cloud(Path(input_path).parent / "sparse") if image_mode == "farthestpose" else None
+    pcd = load_point_cloud(Path(input_path).parent / "sparse") if args.image_mode == "farthestpose" else None
 
-    all_images = get_image_list(all_images, num_images, seed, image_mode, pcd)
+    all_images = get_image_list(all_images, args.num_images, args.seed, args.image_mode, pcd)
 
     num_images = len(all_images)
 
-    if force or not check_files(
+    if args.force or not check_files(
         Path(base_out),
         all_images,
-        require_depth_conf=require_depth_conf and choice == "vggt",
-        shared_camera=shared_camera,
+        require_depth_conf=args.require_depth_conf and args.choice == "vggt",
+        shared_camera=args.shared_camera,
     ):
         if os.path.exists(base_out):
             shutil.rmtree(base_out)
@@ -474,60 +396,60 @@ def run_reconstruction(
     os.makedirs(sparse_path, exist_ok=True)
     os.makedirs(images_path, exist_ok=True)
 
-    if os.path.exists(os.path.join(base_out, "stat.json")) and not force:
+    if os.path.exists(os.path.join(base_out, "stat.json")) and not args.force:
         print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
         return
 
     print(f"Copying {len(all_images)} images from {Path(input_path)} to {Path(images_path)}...")
     for img in all_images:
-        if copy_mode is None:
+        if args.copy_mode is None:
             shutil.copy2(os.path.join(input_path, img), os.path.join(images_path, img))
-        elif copy_mode == "crop" or copy_mode == "square":
+        elif args.copy_mode == "crop" or args.copy_mode == "square":
             im = cv2.imread(os.path.join(input_path, img))
             assert im is not None
             h, w = im.shape[:2]
-            crop_size = min(h, w) if copy_mode == "square" else 518
+            crop_size = min(h, w) if args.copy_mode == "square" else 518
             if h > crop_size:
-                im = im[(h - crop_size) // 2: (h + crop_size) // 2]
+                im = im[(h - crop_size) // 2 : (h + crop_size) // 2]
             if w > crop_size:
-                im = im[:, (w - crop_size) // 2: (w + crop_size) // 2]
+                im = im[:, (w - crop_size) // 2 : (w + crop_size) // 2]
             cv2.imwrite(os.path.join(images_path, img), im)
 
-        elif copy_mode == "tiles":
+        elif args.copy_mode == "tiles":
             raise NotImplementedError()
         else:
-            raise ValueError(f"Unknown copy mode {copy_mode}")
+            raise ValueError(f"Unknown copy mode {args.copy_mode}")
 
     t1 = time.time()
 
-    if choice == "colmap":
+    if args.choice == "colmap":
         profiling = run_colmap_pipeline(
             base_out,
             images_path,
             db_path,
             sparse_path,
-            low_view_count=colmap_mode == "relaxed",
-            shared_camera=shared_camera,
+            low_view_count=args.colmap_mode == "relaxed",
+            shared_camera=args.shared_camera,
         )
-    elif choice == "vggt":
+    elif args.choice == "vggt":
         profiling = run_vggt_pipeline(
             base_out,
-            cache_dir,
-            conf_thres_value,
-            sampling_mode,
-            num_points,
-            camera_type,
-            save_conf_as_errors,
-            shared_camera=shared_camera,
-            use_ba=use_ba,
-            max_ba_iterations=max_ba_iterations,
+            args.cache_dir,
+            args.conf_thres_value,
+            args.sampling_mode,
+            args.num_points,
+            args.camera_type,
+            args.save_conf_as_errors,
+            shared_camera=args.shared_camera,
+            use_ba=args.use_ba,
+            max_ba_iterations=args.max_ba_iterations,
         )
     else:
         raise ValueError("Invalid choice")
 
     total_time = time.time() - t1
 
-    save_timing(base_out, input_path, name, choice, num_images, profiling)
+    save_timing(base_out, input_path, args.name, args.choice, num_images, profiling)
 
     print(f"\nPipeline finished. Results saved in: {base_out}")
     print(f"Time: {total_time:.2f}s")
@@ -541,51 +463,6 @@ def run_reconstruction(
         os.rename(first_path, tmp_path)
         os.rename(best_path, first_path)
         os.rename(tmp_path, best_path)
-
-
-@dataclass
-class Args:
-    name: str
-    input: str
-    choice: str
-    num_images: int | None
-    seed: int
-    conf_thres_value: float
-    sampling_mode: SAMPLING_MODE
-    image_mode: IMAGE_MODE
-    camera_type: CAMERA_TYPE
-    num_points: int
-    colmap_mode: COLMAP_MODE = "default"
-    copy_mode: COPY_MODE = None
-    force: bool = False
-    require_depth_conf: bool = False
-    save_conf_as_errors: bool = False
-    shared_camera: bool = False
-    use_ba: bool = False
-    max_ba_iterations: int = 50
-
-
-def main(args: Args):
-    run_reconstruction(
-        name=args.name,
-        input_path=args.input,
-        choice=args.choice,
-        num_images=args.num_images,
-        seed=args.seed,
-        conf_thres_value=args.conf_thres_value,
-        force=args.force,
-        sampling_mode=args.sampling_mode,
-        image_mode=args.image_mode,
-        copy_mode=args.copy_mode,
-        camera_type=args.camera_type,
-        num_points=args.num_points,
-        colmap_mode=args.colmap_mode,
-        require_depth_conf=args.require_depth_conf,
-        save_conf_as_errors=args.save_conf_as_errors,
-        shared_camera=args.shared_camera,
-        use_ba=args.use_ba,
-        max_ba_iterations=args.max_ba_iterations,
-    )
 
 
 if __name__ == "__main__":
@@ -656,16 +533,16 @@ if __name__ == "__main__":
     if parsed_args.command == "single":
         args_dict = vars(parsed_args)
         args_dict.pop("command")
-        main(Args(**args_dict))
+        run_reconstruction(ReconstructArgs(**args_dict))
 
     elif parsed_args.command == "batch":
         with open(parsed_args.config_path, "r") as f:
             configs = json.load(f)
 
         for config_dict in tqdm.tqdm(configs):
-            run_args = Args(**config_dict)
+            run_args = ReconstructArgs(**config_dict)
             try:
-                main(run_args)
+                run_reconstruction(run_args)
             except Exception as e:
                 print(e)
                 continue
