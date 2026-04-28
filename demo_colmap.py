@@ -15,6 +15,9 @@ import copy
 import torch
 import torch.nn.functional as F
 
+from combine_clouds import save_cameras_json
+from vggt.dependency.pycolmap_to_np import extract_poses_from_reconstruction
+
 # Configure CUDA settings
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
@@ -36,6 +39,7 @@ from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues, uniform_limit_trues
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
+from vggt.utils.image_utils import np_rgb
 
 
 # TODO: add support for masks
@@ -144,40 +148,6 @@ class VGGTProfiling(TypedDict):
     point_cloud_processing_t: float
     saving_t: float
 
-
-def np_rgba(np_arr: np.ndarray, cmap: str) -> np.ndarray:
-    """
-    Convert a grayscale image to RGBA using a matplotlib colormap
-    Args:
-        np_arr (np.ndarray): The grayscale image
-        cmap (str): The name of the matplotlib colormap to use
-    Returns:
-        np.ndarray: The RGBA image
-    """
-
-    max_value = np_arr.max()
-
-    normalised = np_arr.astype(np.float32) / max_value
-    mapper = plt.get_cmap(cmap)
-    rgba = mapper(normalised)
-    rgba = rgba * 255
-    rgba = rgba.astype(np.uint8)
-    # rgba[np_arr == 0] = [21, 59, 106, 255] #153b6a
-    return rgba
-
-
-def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
-    """
-    Convert a grayscale image to RGB using a matplotlib colormap
-    Args:
-        np_arr (np.ndarray): The grayscale image
-        cmap (str): The name of the matplotlib colormap to use
-    Returns:
-        np.ndarray: The RGB image
-    """
-    rgba = np_rgba(np_arr, cmap)
-    return rgba[..., :3]
-
 def save_depths(path: str, depths: np.ndarray, raw_confs: np.ndarray, viz_confs: np.ndarray, camera_names: list[str]):
     # Save the raw depth and confidence maps for visualization
     b = depths.shape[0]
@@ -227,6 +197,7 @@ def run_vggt(
     model: VGGT | None = None,
     cache_dir: str | None = None,
     save_conf_as_errors: bool = False,
+    max_ba_iterations: int = 50,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -385,7 +356,7 @@ def run_vggt(
 
             # You can also change the pred_tracks to tracks from any other methods
             # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
-            pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
+            pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb = predict_tracks(
                 images,
                 conf=depth_conf,
                 points_3d=points_3d,
@@ -404,7 +375,7 @@ def run_vggt(
 
         # TODO: radial distortion, iterative BA, masks
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
-            points_3d,
+            tracked_points_3d,
             extrinsic,
             intrinsic,
             pred_tracks,
@@ -413,7 +384,7 @@ def run_vggt(
             max_reproj_error=max_reproj_error,
             shared_camera=shared_camera,
             camera_type=camera_type,
-            points_rgb=points_rgb,
+            points_rgb=tracked_points_rgb,
             min_inlier_per_frame=16,
         )
 
@@ -423,13 +394,13 @@ def run_vggt(
         # Bundle Adjustment
         ba_options = pycolmap.BundleAdjustmentOptions(
             loss_function_scale=1.0,
-            loss_function_type=pycolmap.LossFunctionType.CAUCHY,  # TRIVIAL, SOFT_L1, CAUCHY
             refine_extra_params=True,
             refine_extrinsics=True,
             refine_focal_length=True,
             refine_principal_point=False,
         )
-        # ba_options.solver_options.max_num_iterations = 3000
+        ba_options.solver_options.max_num_iterations = max_ba_iterations
+        ba_options.solver_options.function_tolerance = 0.0
         ba_options.solver_options.minimizer_progress_to_stdout = True
         examples = []
         for _ in range(1):
@@ -438,11 +409,17 @@ def run_vggt(
 
         print("\n".join(examples))
         reconstruction_resolution = img_load_resolution
-    else:
+
+        extrinsic, intrinsic = extract_poses_from_reconstruction(
+            reconstruction, base_image_path_list, extrinsic, intrinsic, scale
+        )
+
+    if sampling_mode != "ba":
         conf_thres_value = conf_thres_value
         max_points_for_colmap = num_points  # randomly sample 3D points
-        shared_camera = False  # in the feedforward manner, we do not support shared camera
-        camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
+        if not use_ba:
+            shared_camera = False  # in the feedforward manner, we do not support shared camera
+            camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
 
         image_size = np.array([vggt_fixed_resolution, vggt_fixed_resolution])
         num_frames, height, width, _ = points_3d.shape
@@ -519,6 +496,8 @@ def run_vggt(
     if points_conf_rgb is not None:
         trimesh.PointCloud(points_3d, colors=points_conf_rgb).export(os.path.join(scene_dir, "sparse/points_conf.ply"))
     saving_t2 = time.time()
+
+    save_cameras_json(reconstruction, Path(scene_dir) / "cameras.json")
 
     return VGGTProfiling(
         model_vram_mb=model_vram_mb,

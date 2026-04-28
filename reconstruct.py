@@ -164,12 +164,14 @@ def run_vggt_pipeline(
     camera_type: CAMERA_TYPE = "SIMPLE_PINHOLE",
     save_conf_as_errors: bool = False,
     shared_camera: bool = False,
+    use_ba: bool = False,
+    max_ba_iterations: int = 50,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
         scene_dir=base_out,
         num_profiling_runs=0,
-        use_ba=sampling_mode == "ba",
+        use_ba=sampling_mode == "ba" or use_ba,
         camera_type=camera_type,
         conf_thres_value=conf_thres_value,
         sampling_mode=sampling_mode,
@@ -177,6 +179,7 @@ def run_vggt_pipeline(
         cache_dir=cache_dir,
         save_conf_as_errors=save_conf_as_errors,
         shared_camera=shared_camera,
+        max_ba_iterations=max_ba_iterations,
     )
 
 
@@ -385,6 +388,8 @@ def run_reconstruction(
     require_depth_conf: bool = False,
     save_conf_as_errors: bool = False,
     shared_camera: bool = False,
+    use_ba: bool = False,
+    max_ba_iterations: int = 50,
 ):
     name = name.strip("/")
 
@@ -428,7 +433,13 @@ def run_reconstruction(
 
     extra_parts.append(image_mode)
 
-    if choice == "colmap" or sampling_mode == "ba":
+    if use_ba and choice != "colmap":
+        extra_parts.append("useba")
+
+    if choice == "vggt" and (sampling_mode == "ba" or use_ba):
+        extra_parts.append(f"maxba{max_ba_iterations}")
+
+    if choice == "colmap" or sampling_mode == "ba" or use_ba:
         if shared_camera:
             extra_parts.append("sharedcam")
 
@@ -451,7 +462,12 @@ def run_reconstruction(
 
     num_images = len(all_images)
 
-    if force or not check_files(Path(base_out), all_images, require_depth_conf=require_depth_conf and choice == "vggt", shared_camera=shared_camera):
+    if force or not check_files(
+        Path(base_out),
+        all_images,
+        require_depth_conf=require_depth_conf and choice == "vggt",
+        shared_camera=shared_camera,
+    ):
         if os.path.exists(base_out):
             shutil.rmtree(base_out)
 
@@ -503,6 +519,8 @@ def run_reconstruction(
             camera_type,
             save_conf_as_errors,
             shared_camera=shared_camera,
+            use_ba=use_ba,
+            max_ba_iterations=max_ba_iterations,
         )
     else:
         raise ValueError("Invalid choice")
@@ -543,6 +561,8 @@ class Args:
     require_depth_conf: bool = False
     save_conf_as_errors: bool = False
     shared_camera: bool = False
+    use_ba: bool = False
+    max_ba_iterations: int = 50
 
 
 def main(args: Args):
@@ -563,6 +583,8 @@ def main(args: Args):
         require_depth_conf=args.require_depth_conf,
         save_conf_as_errors=args.save_conf_as_errors,
         shared_camera=args.shared_camera,
+        use_ba=args.use_ba,
+        max_ba_iterations=args.max_ba_iterations,
     )
 
 
@@ -587,6 +609,7 @@ if __name__ == "__main__":
         choices=list(get_args(SAMPLING_MODE)),
         help="Sampling mode for point cloud subsampling",
     )
+    single_parser.add_argument("--use_ba", action="store_true", help="Use Bundle Adjustment for VGGT.")
     single_parser.add_argument(
         "--image_mode",
         type=str,
@@ -621,6 +644,7 @@ if __name__ == "__main__":
     single_parser.add_argument("--require_depth_conf", action="store_true", help="Require depth confidence map")
     single_parser.add_argument("--save_conf_as_errors", action="store_true", help="Save depth confidence map as errors")
     single_parser.add_argument("--shared_camera", action="store_true", help="Share cameras between images")
+    single_parser.add_argument("--max_ba_iterations", type=int, default=50, help="Max BA iterations")
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(

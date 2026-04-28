@@ -183,6 +183,24 @@ regexes = [
         cast=lambda x: "Fallback Cams" if x == "fallbackcams" else "",
         default=None,
     ),
+    Param(
+        name="random_init",
+        pattern=r"_(randinit)",
+        cast=lambda x: "Random Init" if x == "randinit" else "",
+        default=None,
+    ),
+    Param(
+        name="use_ba",
+        pattern=r"_(useba)",
+        cast=lambda x: "Use BA" if x == "useba" else "",
+        default=None,
+    ),
+    Param(
+        name="max_ba_iterations",
+        pattern=r"_(maxba\d+)",
+        cast=lambda x: int(x.replace("maxba", "")) if x.startswith("maxba") else 0,
+        default=None,
+    ),
 ]
 
 
@@ -1239,7 +1257,8 @@ def plot_graph(
     elif "method" in df.columns:
         sort_cols.append("method")
 
-    sort_cols.append(x_axis)
+    if x_axis:
+        sort_cols.append(x_axis)
 
     if sort_cols:
         df = df.sort_values(by=sort_cols)
