@@ -19,7 +19,7 @@ import pycolmap
 
 from cam_utils import get_poses
 from check_sparse import check_sparse_folder
-from combine_clouds import load_point_cloud
+from combine_clouds import load_point_cloud, save_cameras_json
 from demo_colmap import VGGTProfiling, run_vggt
 from reconstruct_args import CAMERA_TYPE, COLMAP, COLMAP_MODE, COPY_MODE, IMAGE_MODE, SAMPLING_MODE, ReconstructArgs
 
@@ -140,6 +140,9 @@ def run_colmap_pipeline(
 
     monitor.stop()
     monitor.join()
+
+    reconstruction = load_point_cloud(Path(sparse_path))
+    save_cameras_json(reconstruction, Path(base_out) / "cameras.json")
 
     return COLMAPProfiling(
         colmap_vram_mb=(monitor.peak_memory, monitor.peak_memory),
@@ -319,6 +322,26 @@ def check_files(base_output: Path, all_images: list[str], require_depth_conf: bo
     except Exception:
         colmap_image_names = []
         num_cameras = 0
+
+    cameras_file = base_output / "cameras.json"
+
+    if not os.path.exists(cameras_file):
+        try:
+            reconstruction = load_point_cloud(base_output / "sparse")
+            save_cameras_json(reconstruction, Path(base_output) / "cameras.json")
+        except Exception:
+            pass
+
+    if os.path.exists(cameras_file):
+        with open(cameras_file, "r") as f:
+            camera_data = json.load(f)
+            camera_data_names = set(camera_data.keys())
+    else:
+        camera_data_names = set()
+
+    if len(set(all_images) | camera_data_names) > num_images or len(camera_data_names) == 0:
+        print("Invalid cameras found in camera json. Forcing reconstruction.")
+        valid = False
 
     if (shared_camera and num_cameras != 1) or (not shared_camera and num_cameras != len(colmap_image_names)):
         print("Invalid number of cameras found in COLMAP database. Forcing reconstruction.")
