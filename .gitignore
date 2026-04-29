@@ -158,3 +158,8 @@ test/
 plots/
 stubs/
 configs/
+
+.gradio
+.vscode
+*code-workspace
+stats*.json
