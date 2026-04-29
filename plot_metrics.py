@@ -128,9 +128,9 @@ regexes = [
         default="",
     ),
     Param(
-        name="depth_loss",
-        pattern=r"_(depth)",
-        cast=lambda x: "Depth Loss" if x == "depth" else "",
+        name="depth_loss_mode",
+        pattern=r"_depth(points)|_depth(full)|_depth(closer)",
+        cast=str,
         default="",
     ),
     Param(
@@ -146,9 +146,9 @@ regexes = [
         default=0.0,
     ),
     Param(
-        name="depth_conf",
-        pattern=r"_(conf)",
-        cast=lambda x: "Depth Confidence" if x == "conf" else "",
+        name="depth_conf_mode",
+        pattern=r"_conf(standard)|_conf(sigmoid)",
+        cast=str,
         default="",
     ),
     Param(name="choice", pattern=r"(vggt)|(colmap)|(gt)_outputs", cast=str),
@@ -1015,6 +1015,7 @@ def _process_single_render(
     last_row: bool = False,
     show_depth: bool = False,
     show_gt: bool = False,
+    render_num: int = 0,
 ):
     images = []
     # Grab only the first image for this validation step
@@ -1023,12 +1024,12 @@ def _process_single_render(
     if not render_files:
         return images
 
-    first_render = render_files[0]
-    depth_factors = (row.get("raw_metrics", {}) or {}).get("depth_factor", [])
-    depth_factor = depth_factors[0] if depth_factors else None
+    render = render_files[render_num]
+    depth_factors: list[float] = (row.get("raw_metrics", {}) or {}).get("depth_factor", [])
+    depth_factor = depth_factors[render_num] if depth_factors else None
 
     try:
-        img = Image.open(first_render).convert("RGB")
+        img = Image.open(render).convert("RGB")
 
         w, h = img.size
 
@@ -1087,13 +1088,30 @@ def _process_single_render(
         if x_axis and pd.notna(row.get(x_axis)):
             config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
-        psnr_val = row.get("psnr")
-        lpips_val = row.get("lpips")
+        psnr_values: list[float] = (row.get("raw_metrics", {}) or {}).get("psnr", [])
+        lpips_values: list[float] = (row.get("raw_metrics", {}) or {}).get("lpips", [])
+        ssim_values: list[float] = (row.get("raw_metrics", {}) or {}).get("ssim", [])
+
+        if psnr_values:
+            psnr_val = psnr_values[render_num]
+        else:
+            psnr_val = row.get("psnr")
+
+        if lpips_values:
+            lpips_val = lpips_values[render_num]
+        else:
+            lpips_val = row.get("lpips")
+
+        if ssim_values:
+            ssim_val = ssim_values[render_num]
+        else:
+            ssim_val = row.get("ssim")
 
         psnr_str = f"{psnr_val:.2f}" if pd.notna(psnr_val) else "N/A"
         lpips_str = f"{lpips_val:.4f}" if pd.notna(lpips_val) else "N/A"
+        ssim_str = f"{ssim_val:.4f}" if pd.notna(ssim_val) else "N/A"
 
-        label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str}"
+        label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
 
         pred_img = add_text_to_image(pred_img, label_text, 48)
         images.append(pred_img)
@@ -1103,7 +1121,7 @@ def _process_single_render(
             images.append(gt_img)
 
     except Exception as e:
-        print(f"Error processing image {first_render}: {e}")
+        print(f"Error processing image {render}: {e}")
 
     return images
 
@@ -1141,6 +1159,7 @@ def create_render_figure(
     max_cols: int = 3,
     show_depth: bool = False,
     show_gt: bool = False,
+    render_nums: list[int] = [0],
 ):
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
@@ -1159,18 +1178,19 @@ def create_render_figure(
             render_src_dir = p.parents[1] / "renders"
             if render_src_dir.exists():
                 folder_name = p.parents[1].name
-
-                processed_images = _process_single_render(
-                    row,
-                    render_src_dir,
-                    p,
-                    folder_name,
-                    x_axis,
-                    last_row,
-                    show_depth,
-                    show_gt,
-                )
-                images_to_stack.extend(processed_images)
+                for render_num in render_nums:
+                    processed_images = _process_single_render(
+                        row,
+                        render_src_dir,
+                        p,
+                        folder_name,
+                        x_axis,
+                        last_row,
+                        show_depth,
+                        show_gt,
+                        render_num,
+                    )
+                    images_to_stack.extend(processed_images)
 
     if images_to_stack:
         stacked_img = _stack_images_with_wrap(images_to_stack, max_cols=max_cols)
@@ -1237,6 +1257,7 @@ def plot_graph(
     max_render_cols: int = 3,
     show_depth: bool = False,
     show_gt: bool = False,
+    render_nums: list[int] = [0],
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -1559,7 +1580,10 @@ def plot_graph(
 
     os.makedirs(os.path.dirname(suffix), exist_ok=True)
 
-    serial_df = df.drop("raw_metrics", axis=1)
+    if "raw_metrics" in df.columns:
+        serial_df = df.drop("raw_metrics", axis=1)
+    else:
+        serial_df = df
 
     csv_out_file = f"{suffix}.csv"
     os.makedirs(os.path.dirname(csv_out_file), exist_ok=True)
@@ -1619,6 +1643,7 @@ def plot_graph(
                 max_cols=max_render_cols,
                 show_depth=show_depth,
                 show_gt=show_gt,
+                render_nums=render_nums,
             )
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
