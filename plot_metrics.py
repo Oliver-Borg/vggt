@@ -1373,6 +1373,7 @@ def plot_graph(
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓"},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
+        {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count", "direction": "↑"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
