@@ -109,5 +109,5 @@ class ReconstructArgs:
 
     @property
     def base_out(self):
-        base_out = f"./{self.choice}_outputs/{self.name}"
+        base_out = f"./{self.choice}_outputs/{self.full_name}"
         return base_out
