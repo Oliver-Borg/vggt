@@ -93,8 +93,8 @@ regexes = [
     Param(name="seed", pattern=r"_s(\d+)", cast=int),
     Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
     Param(name="num_points", pattern=r"_p(\d+)", cast=int),
-    Param(name="sampling_mode", pattern=r"_(ba)|(voxels)|(confidence)|(random)|(vox3)", cast=str),
-    Param(name="image_mode", pattern=r"_(shuffle)|(distributed)|(mfps)|(farthestpose)", cast=str, default=""),
+    Param(name="sampling_mode", pattern=r"_(ba)|_(voxels)|_(confidence)|_(random)|_(vox3)", cast=str),
+    Param(name="image_mode", pattern=r"_(shuffle)|_(distributed)|_(mfps)|_(farthestpose)", cast=str, default=""),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default=""),
     Param(
@@ -141,8 +141,8 @@ regexes = [
     ),
     Param(
         name="depth_lambda",
-        pattern=r"_(dl\d+\.\d+)|(dl\d+)",
-        cast=lambda x: (float(x.replace("dl", ""))) if x.startswith("dl") else 0.0,
+        pattern=r"_dl(\d+\.\d+)|_dl(\d+)",
+        cast=float,
         default=0.0,
     ),
     Param(
@@ -197,11 +197,31 @@ regexes = [
     ),
     Param(
         name="max_ba_iterations",
-        pattern=r"_(maxba\d+)",
-        cast=lambda x: int(x.replace("maxba", "")) if x.startswith("maxba") else 0,
+        pattern=r"_maxba(\d+)",
+        cast=int,
         default=None,
     ),
 ]
+
+params_dict = {param.name: param for param in regexes}
+
+
+def convert_to_nullable_ints(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Converts numeric columns that contain only integers and NaNs into pandas'
+    nullable 'Int64' type. This prevents integers from becoming floats (e.g., 1.0)
+    in JSON dumps and keeps NaNs as null.
+    """
+    df_clean = df.copy()
+    for col in df_clean.columns:
+        if col in params_dict and params_dict[col].cast in [float, str]:
+            continue
+        if pd.api.types.is_numeric_dtype(df_clean[col]):
+            valid_vals = df_clean[col].dropna()
+            # If the column has values and all non-NaN values are whole numbers
+            if not valid_vals.empty and (valid_vals % 1 == 0).all():
+                df_clean[col] = df_clean[col].astype("Int64")
+    return df_clean
 
 
 def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
@@ -339,7 +359,7 @@ def load_metrics_to_df(
 
     df_merged = df.groupby(valid_group_cols, dropna=False).first().reset_index()
 
-    return df_merged
+    return convert_to_nullable_ints(df_merged)
 
 
 def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float]:
@@ -1539,14 +1559,16 @@ def plot_graph(
 
     os.makedirs(os.path.dirname(suffix), exist_ok=True)
 
+    serial_df = df.drop("raw_metrics", axis=1)
+
     csv_out_file = f"{suffix}.csv"
     os.makedirs(os.path.dirname(csv_out_file), exist_ok=True)
-    df.to_csv(csv_out_file, index=False)
+    serial_df.to_csv(csv_out_file, index=False)
     print("Dataframe saved:", Path(csv_out_file))
 
     json_out_file = f"{suffix}.json"
     os.makedirs(os.path.dirname(json_out_file), exist_ok=True)
-    df.to_json(json_out_file, orient="records", indent=4)
+    serial_df.to_json(json_out_file, orient="records", indent=4)
     print("Dataframe saved:", Path(json_out_file))
 
     config_out_file = None
