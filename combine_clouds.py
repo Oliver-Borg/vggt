@@ -500,7 +500,11 @@ def combine_recons(
     partial_recons: list[pycolmap.Reconstruction], glue_recon: pycolmap.Reconstruction
 ) -> pycolmap.Reconstruction:
 
-    all_recons = [align_to_world_space(partial_recon, glue_recon) for partial_recon in partial_recons if partial_recon.num_points3D() > 0]
+    all_recons = [
+        align_to_world_space(partial_recon, glue_recon)
+        for partial_recon in partial_recons
+        if partial_recon.num_points3D() > 0
+    ]
 
     if len(all_recons) == 1:
         return all_recons[0]
@@ -654,6 +658,10 @@ if __name__ == "__main__":
     copy_t1 = time.time()
     shutil.copytree(Path(args.camera_source) / "images", Path(args.output_dir) / "images", dirs_exist_ok=True)
     shutil.copytree(Path(args.point_source) / "images", Path(args.output_dir) / "images", dirs_exist_ok=True)
+    if os.path.exists(Path(args.camera_source) / "gt_cameras.json"):
+        shutil.copytree(
+            Path(args.camera_source) / "gt_cameras.json", Path(args.output_dir) / "gt_cameras.json", dirs_exist_ok=True
+        )
     if os.path.exists(Path(args.camera_source) / "depths"):
         shutil.copytree(Path(args.camera_source) / "depths", Path(args.output_dir) / "depths", dirs_exist_ok=True)
     if os.path.exists(Path(args.point_source) / "depths"):
@@ -678,3 +686,7 @@ if __name__ == "__main__":
             },
             f,
         )
+    pred_pcd = load_cameras(Path(args.output_dir) / "sparse")
+    gt_pcd = load_cameras(Path(args.output_dir) / "gt_cameras.json")
+    pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
+    save_cameras_json(pred_pcd, Path(args.output_dir) / "aligned_cameras.json")

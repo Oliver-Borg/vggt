@@ -1,17 +1,21 @@
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as clrs
 from pathlib import Path
-from typing import get_args
 from collections import Counter
 
 from cam_alignment import get_alignment_rotation
 from cam_utils import get_poses
-from reconstruct import get_image_list, IMAGE_MODE
-from combine_clouds import load_point_cloud
+from reconstruct import get_image_list
+from combine_clouds import align_to_world_space, load_point_cloud
 
 
-def plot_cameras(poses: dict[str, np.ndarray], colors: dict[str, tuple[float, float, float]], title: str | None = None):
+def plot_cameras(
+    poses: dict[str, np.ndarray],
+    colors: dict[str, tuple[float, float, float, float]] | dict[str, tuple[float, float, float]],
+    title: str | None = None,
+):
     ax = plt.gca()
     poses_list = list(poses.values())
 
@@ -25,7 +29,7 @@ def plot_cameras(poses: dict[str, np.ndarray], colors: dict[str, tuple[float, fl
     colors_list = []
     is_ups = []
 
-    line_length = 0.3
+    line_length = 0.1
     norm_dim = 3
 
     for name, c2w in poses.items():
@@ -48,6 +52,15 @@ def plot_cameras(poses: dict[str, np.ndarray], colors: dict[str, tuple[float, fl
         colors_list.append(colors.get(name, (0, 0, 0)))  # Default to black if missing
 
     xs_arr, ys_arr, colors_arr, is_ups_arr = map(np.array, [xs, ys, colors_list, is_ups])
+
+    world_width = np.ptp(xs_arr)
+    world_height = np.ptp(ys_arr)
+
+    max_size = max(world_width, world_height)
+
+    dxs = [dx / max_size for dx in dxs]
+    dys = [dy / max_size for dy in dys]
+
     mask_up, mask_down = is_ups_arr, ~is_ups_arr
 
     # Scatter plots for the camera centers looking DOWN (o)
@@ -74,7 +87,7 @@ def plot_cameras(poses: dict[str, np.ndarray], colors: dict[str, tuple[float, fl
             marker="x",
         )
 
-    ax.quiver(xs, ys, dxs, dys, color=colors_list, angles="xy", scale_units="xy", scale=0.8, width=0.003, zorder=1)
+    ax.quiver(xs, ys, dxs, dys, color=colors_list, angles="xy", scale_units="xy", scale=0.5, width=0.003, zorder=1)
 
     if title is not None:
         ax.set_title(title, fontsize=12)
@@ -152,7 +165,7 @@ def plot_dashboard(pcd, image_counts, seed, image_mode, out_path):
     plt.sca(ax_main)
     title = f"Aligned Top-Down Camera Poses\n(Mode: {image_mode} | Seed: {seed})"
     plot_cameras(poses, colors, title=title)
-    norm = plt.Normalize(vmin=0, vmax=max_membership)
+    norm = clrs.Normalize(vmin=0, vmax=max_membership)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax_main)
@@ -168,22 +181,61 @@ def plot_dashboard(pcd, image_counts, seed, image_mode, out_path):
     plt.show()
 
 
+def plot_extrinsics(gt_path: Path, pred_path: Path, output_path: Path, image_names: list[str] | None = None):
+    gt_pcd = load_point_cloud(gt_path)
+    pred_pcd = load_point_cloud(pred_path)
+
+    pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
+
+    gt_poses = get_poses(gt_pcd)
+    pred_poses = get_poses(pred_pcd)
+
+    combined_poses: dict[str, np.ndarray] = {}
+    for k, v in gt_poses.items():
+        if image_names is not None and k not in image_names:
+            continue
+        combined_poses["gt_" + k] = v
+
+    for k, v in pred_poses.items():
+        if image_names is not None and k not in image_names:
+            continue
+        combined_poses["pred_" + k] = v
+
+    # Red for pred, blue for GT
+    colours = {k: (1.0, 0.0, 0.0, 0.5) if k.startswith("gt_") else (0.0, 0.0, 1.0, 0.5) for k in combined_poses.keys()}
+
+    fig = plt.figure(figsize=(16, 12))
+    ax_main = plt.subplot2grid((1, 1), (0, 0))
+    plt.sca(ax_main)
+    title = "Aligned Top-Down Camera Poses"
+
+    plot_cameras(combined_poses, colours, title=title)
+    plt.tight_layout()
+
+    output_path = Path(output_path)
+
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    png_path = output_path / "camera_alignment.png"
+    pdf_path = output_path / "camera_alignment.pdf"
+
+    plt.savefig(png_path, dpi=300, bbox_inches="tight")
+    plt.savefig(pdf_path, format="pdf", bbox_inches="tight")
+    print(f"Dashboard saved to {png_path}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot top-down cameras color-coded by sequence membership.")
     parser.add_argument("--gt_path", type=str, required=True, help="Path to the ground truth sparse reconstruction")
-    parser.add_argument("--dataset_name", type=str, required=True, help="Name of the dataset")
-    parser.add_argument("--image_counts", type=int, nargs="+", required=True, help="List of image counts")
-    parser.add_argument("--seed", type=int, default=42, help="Seed for selection")
+    parser.add_argument("--pred_path", type=str, required=True, help="Path to the ground truth sparse reconstruction")
+    parser.add_argument("--output_path", type=str, required=True, help="Output path for the plot")
+    parser.add_argument("--num_images", type=int, required=True, help="Num images from GT")
 
     args = parser.parse_args()
-    pcd = load_point_cloud(args.gt_path)
 
-    print("Generating dashboards...")
-    for image_mode in list(get_args(IMAGE_MODE)):
-        out_dir = Path("plots/cameras")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = (
-            out_dir
-            / f"{args.dataset_name}_dashboard_{image_mode}_seed_{args.seed}_counts_{'-'.join(map(str, args.image_counts))}.png"
-        )
-        plot_dashboard(pcd, args.image_counts, args.seed, image_mode, out_path)
+    plot_extrinsics(
+        gt_path=Path(args.gt_path),
+        pred_path=Path(args.pred_path),
+        output_path=Path(args.output_path),
+        image_names=None,
+    )

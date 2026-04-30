@@ -19,7 +19,7 @@ import pycolmap
 
 from cam_utils import get_poses
 from check_sparse import check_sparse_folder
-from combine_clouds import load_point_cloud, save_cameras_json
+from combine_clouds import align_to_world_space, load_point_cloud, save_cameras_json
 from demo_colmap import VGGTProfiling, run_vggt
 from reconstruct_args import CAMERA_TYPE, COLMAP, COLMAP_MODE, COPY_MODE, IMAGE_MODE, SAMPLING_MODE, ReconstructArgs
 
@@ -421,6 +421,14 @@ def run_reconstruction(
 
     if os.path.exists(os.path.join(base_out, "stat.json")) and not args.force:
         print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
+        if not os.path.exists(Path(base_out) / "aligned_cameras.json"):
+            # TODO Instead of this save aligned_cams.json and gt_cams.json
+            # Then in plot_metrics, we can just read these in
+            gt_pcd = load_point_cloud(Path(input_path).parent / "sparse")
+            pred_pcd = load_point_cloud(Path(base_out) / "sparse")
+            pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
+            save_cameras_json(pred_pcd, Path(base_out) / "aligned_cameras.json")
+            save_cameras_json(gt_pcd, Path(base_out) / "gt_cameras.json")
         return
 
     print(f"Copying {len(all_images)} images from {Path(input_path)} to {Path(images_path)}...")
@@ -433,9 +441,9 @@ def run_reconstruction(
             h, w = im.shape[:2]
             crop_size = min(h, w) if args.copy_mode == "square" else 518
             if h > crop_size:
-                im = im[(h - crop_size) // 2 : (h + crop_size) // 2]
+                im = im[(h - crop_size) // 2: (h + crop_size) // 2]
             if w > crop_size:
-                im = im[:, (w - crop_size) // 2 : (w + crop_size) // 2]
+                im = im[:, (w - crop_size) // 2: (w + crop_size) // 2]
             cv2.imwrite(os.path.join(images_path, img), im)
 
         elif args.copy_mode == "tiles":
@@ -486,6 +494,12 @@ def run_reconstruction(
         os.rename(first_path, tmp_path)
         os.rename(best_path, first_path)
         os.rename(tmp_path, best_path)
+
+    gt_pcd = load_point_cloud(Path(input_path).parent / "sparse")
+    pred_pcd = load_point_cloud(Path(base_out) / "sparse")
+    pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
+    save_cameras_json(pred_pcd, Path(base_out) / "aligned_cameras.json")
+    save_cameras_json(gt_pcd, Path(base_out) / "gt_cameras.json")
 
 
 if __name__ == "__main__":
