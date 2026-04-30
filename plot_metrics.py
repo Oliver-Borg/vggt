@@ -167,8 +167,14 @@ regexes = [
     Param(name="pcd_src", pattern=r"_(colmappcd)|(vggtpcd)|(gtpcd)|(bothpcd)", cast=str, default=None),
     Param(
         name="align_mode",
-        pattern=r"_(amlocal)|(amglobal)",
+        pattern=r"_(amlocal)|_(amglobal)",
         cast=lambda x: "Local Alignment" if x == "amlocal" else "Global Alignment",
+        default=None,
+    ),
+    Param(
+        name="align_glue",
+        pattern=r"_(glued)",
+        cast=lambda _: "Align Glued",
         default=None,
     ),
     Param(

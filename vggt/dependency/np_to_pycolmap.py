@@ -200,6 +200,82 @@ def pycolmap_to_batch_np_matrix(reconstruction, device="cpu", camera_type="SIMPL
     return points3D, extrinsics, intrinsics, extra_params
 
 
+def pycolmap_to_batch_np_matrix_full(reconstruction, device="cpu", camera_type="SIMPLE_PINHOLE"):
+    """
+    Convert a PyCOLMAP Reconstruction Object to batched NumPy arrays.
+
+    Args:
+        reconstruction (pycolmap.Reconstruction): The reconstruction object from PyCOLMAP.
+        device (str): Ignored in NumPy version (kept for API compatibility).
+        camera_type (str): The type of camera model used (default: "SIMPLE_PINHOLE").
+
+    Returns:
+        tuple: points3D, points_rgb, points_xyf, points_errors, extrinsics, intrinsics, extra_params, image_names
+    """
+    points3D_list = []
+    points_rgb_list = []
+    points_xyf_list = []
+    points_errors_list = []
+    image_names = []
+    image_id_to_fidx = {}
+
+    extrinsics = []
+    intrinsics = []
+
+    extra_params = [] if camera_type == "SIMPLE_RADIAL" else None
+
+    fidx = 0
+    for image_id, pyimg in reconstruction.images.items():
+        image_id_to_fidx[image_id] = fidx
+        image_names.append(pyimg.name)
+
+        pycam = reconstruction.cameras[pyimg.camera_id]
+        matrix = pyimg.cam_from_world.matrix()
+        extrinsics.append(matrix)
+
+        calibration_matrix = pycam.calibration_matrix()
+        intrinsics.append(calibration_matrix)
+
+        if camera_type == "SIMPLE_RADIAL":
+            extra_params.append(pycam.params[-1])
+
+        fidx += 1
+
+    for point3D_id, p3d in reconstruction.points3D.items():
+        points3D_list.append(p3d.xyz)
+        points_rgb_list.append(p3d.color)
+        points_errors_list.append(p3d.error)
+
+        # Find a valid observation to serve as points_xyf
+        valid_el = None
+        for el in p3d.track.elements:
+            if el.image_id in image_id_to_fidx:
+                valid_el = el
+                break
+
+        if valid_el is not None:
+            img = reconstruction.images[valid_el.image_id]
+            p2d_xy = img.points2D[valid_el.point2D_idx].xy
+            points_xyf_list.append([p2d_xy[0], p2d_xy[1], image_id_to_fidx[valid_el.image_id]])
+        else:
+            points_xyf_list.append([0.0, 0.0, 0.0])
+
+    # Convert lists to NumPy arrays instead of torch tensors
+    points3D = np.array(points3D_list) if points3D_list else np.empty((0, 3))
+    points_rgb = np.array(points_rgb_list) if points_rgb_list else np.empty((0, 3))
+    points_xyf = np.array(points_xyf_list) if points_xyf_list else np.empty((0, 3))
+    points_errors = np.array(points_errors_list) if points_errors_list else np.empty((0,))
+
+    extrinsics = np.stack(extrinsics) if extrinsics else np.empty((0, 3, 4))
+    intrinsics = np.stack(intrinsics) if intrinsics else np.empty((0, 3, 3))
+
+    if camera_type == "SIMPLE_RADIAL":
+        extra_params = np.stack(extra_params)
+        extra_params = extra_params[:, None]
+
+    return points3D, points_rgb, points_xyf, points_errors, extrinsics, intrinsics, extra_params, image_names
+
+
 ########################################################
 
 
