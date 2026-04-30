@@ -1,71 +1,39 @@
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-import pycolmap
 from pathlib import Path
 from typing import get_args
 from collections import Counter
 
-# Importing functions and types directly from the existing scripts
 from cam_alignment import get_alignment_rotation
+from cam_utils import get_poses
 from reconstruct import get_image_list, IMAGE_MODE
 from combine_clouds import load_point_cloud
 
 
-def plot_cameras(
-    pcd: pycolmap.Reconstruction,
-    membership_counts: dict[str, int],
-    image_counts: list[int],
-    seed: int,
-    image_mode: IMAGE_MODE,
-    ax=None,
-):
-    poses_list = []
-    for image in pcd.images.values():
-        try:
-            # Get Camera-to-World (C2W)
-            poses_list.append(image.cam_from_world.inverse().matrix())
-        except AttributeError:
-            # Fallback for older pycolmap: manually invert R and t
-            R = image.rotmat()
-            t = image.tvec
-            c2w = np.eye(4)
-            c2w[:3, :3] = R.T
-            c2w[:3, 3] = -R.T @ t
-            poses_list.append(c2w)
+def plot_cameras(poses: dict[str, np.ndarray], colors: dict[str, tuple[float, float, float]], title: str | None = None):
+    ax = plt.gca()
+    poses_list = list(poses.values())
+
+    if not poses_list:
+        return ax
 
     R_align = get_alignment_rotation(np.array(poses_list))
 
     xs, ys = [], []
     dxs, dys = [], []
-    colors = []
+    colors_list = []
     is_ups = []
-    sizes = []
 
     line_length = 0.3
     norm_dim = 3
 
-    for img_id, image in pcd.images.items():
-        name = image.name
-        count = membership_counts.get(name, 0)
-        if count == 0:
-            continue
-
-        # Compatibility block for different pycolmap versions
-        try:
-            # Newer versions use cam_from_world
-            R = image.cam_from_world.rotation.matrix()
-            t = image.cam_from_world.translation
-        except AttributeError:
-            # Older versions use qvec/tvec / rotmat()
-            R = image.rotmat()
-            t = image.tvec
-
+    for name, c2w in poses.items():
         # Apply alignment
-        # Camera center in world coordinates: -R^T * t
-        center = R_align @ (-R.T @ t)
-        # Look direction in world coordinates: R^T * [0, 0, 1]^T
-        look_dir = R_align @ (R.T @ np.array([0, 0, 1]))
+        # Camera center in world coordinates: c2w[:3, 3]
+        center = R_align @ c2w[:3, 3]
+        # Look direction in world coordinates: Z-axis of c2w
+        look_dir = R_align @ c2w[:3, 2]
 
         # True if looking up (positive Z), False if looking down
         is_ups.append(look_dir[2] > 0)
@@ -77,34 +45,18 @@ def plot_cameras(
 
         dxs.append(look_dir[0])
         dys.append(look_dir[1])
-        colors.append(count)
+        colors_list.append(colors.get(name, (0, 0, 0)))  # Default to black if missing
 
-        # Scale the size dynamically based on membership count
-        sizes.append(20 + count * 20)
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(12, 10))
-    else:
-        fig = ax.get_figure()
-
-    max_membership = len(image_counts)
-    cmap = "coolwarm"
-
-    xs_arr, ys_arr, colors_arr, sizes_arr, is_ups_arr = map(np.array, [xs, ys, colors, sizes, is_ups])
+    xs_arr, ys_arr, colors_arr, is_ups_arr = map(np.array, [xs, ys, colors_list, is_ups])
     mask_up, mask_down = is_ups_arr, ~is_ups_arr
-
-    scatter = None
 
     # Scatter plots for the camera centers looking DOWN (o)
     if np.any(mask_down):
-        scatter = ax.scatter(
+        ax.scatter(
             xs_arr[mask_down],
             ys_arr[mask_down],
             c=colors_arr[mask_down],
-            cmap=cmap,
-            vmin=0,
-            vmax=max_membership,
-            s=sizes_arr[mask_down],
+            s=40,
             zorder=2,
             edgecolors="k",
             marker="o",
@@ -112,31 +64,25 @@ def plot_cameras(
 
     # Scatter plots for the camera centers looking UP (x)
     if np.any(mask_up):
-        sc_up = ax.scatter(
+        ax.scatter(
             xs_arr[mask_up],
             ys_arr[mask_up],
             c=colors_arr[mask_up],
-            cmap=cmap,
-            vmin=0,
-            vmax=max_membership,
-            s=sizes_arr[mask_up],
+            s=40,
             zorder=2,
             linewidths=1.5,
             marker="x",
         )
-        if scatter is None:
-            scatter = sc_up
 
-    ax.quiver(xs, ys, dxs, dys, colors, cmap=cmap, angles="xy", scale_units="xy", scale=0.8, width=0.003, zorder=1)
+    ax.quiver(xs, ys, dxs, dys, color=colors_list, angles="xy", scale_units="xy", scale=0.8, width=0.003, zorder=1)
 
-    if scatter is not None:
-        cbar = fig.colorbar(scatter, ax=ax)
-        cbar.set_label("Set Membership Count", fontsize=10)
-        cbar.set_ticks(range(max_membership + 1))
+    if title is not None:
+        ax.set_title(title, fontsize=12)
 
-    ax.set_title(f"Aligned Top-Down Camera Poses\n(Mode: {image_mode} | Seed: {seed})", fontsize=12)
     ax.axis("equal")
     ax.grid(True, linestyle="--", alpha=0.6)
+
+    return ax
 
 
 def plot_membership_bars(membership_counts: dict[str, int], image_counts: list[int], ax=None):
@@ -191,12 +137,28 @@ def plot_dashboard(pcd, image_counts, seed, image_mode, out_path):
     # Filter out cameras with 0 membership counts
     membership_counts = {k: v for k, v in membership_counts.items() if v > 0}
 
+    all_poses = get_poses(pcd)
+    poses = {k: all_poses[k] for k in membership_counts.keys() if k in all_poses}
+    max_membership = len(image_counts)
+    cmap = plt.get_cmap("coolwarm")
+    colors = {k: cmap(v / max_membership)[:3] for k, v in membership_counts.items()}
+
     fig = plt.figure(figsize=(16, 12))
     ax_main = plt.subplot2grid((3, 2), (0, 0), colspan=2, rowspan=2)
     ax_bar = plt.subplot2grid((3, 2), (2, 0))
     ax_dist = plt.subplot2grid((3, 2), (2, 1))
 
-    plot_cameras(pcd, membership_counts, image_counts, seed, image_mode, ax=ax_main)
+    # Set ax_main as active context so plot_cameras hooks into the dashboard correctly
+    plt.sca(ax_main)
+    title = f"Aligned Top-Down Camera Poses\n(Mode: {image_mode} | Seed: {seed})"
+    plot_cameras(poses, colors, title=title)
+    norm = plt.Normalize(vmin=0, vmax=max_membership)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax_main)
+    cbar.set_label("Set Membership Count", fontsize=10)
+    cbar.set_ticks(range(max_membership + 1))
+
     plot_membership_bars(membership_counts, image_counts, ax=ax_bar)
     plot_membership_distribution(membership_counts, image_counts, ax=ax_dist)
 
