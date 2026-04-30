@@ -486,6 +486,11 @@ def run_vggt(
             reconstruction, base_image_path_list, extrinsic, intrinsic, scale
         )
 
+        points_rgb = tracked_points_rgb
+        if sampling_mode == "ba":
+            points_3d = tracked_points_3d
+
+
     if sampling_mode != "ba":
         conf_thres_value = conf_thres_value
         max_points_for_colmap = num_points  # randomly sample 3D points
