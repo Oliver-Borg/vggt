@@ -1052,7 +1052,7 @@ def _process_single_render(
             gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
             depth = np.array(depth).mean(axis=-1)
             depth *= depth_factor
-            median_depth = np.median(np.array(depth))
+            median_depth = (np.median(np.array(depth)) + 1e-5)
             depth = depth / median_depth / 10
             depth = np.clip(depth, 0.0, 1.0)
             depth = Image.fromarray(np_rgb(depth))
@@ -1305,9 +1305,9 @@ def plot_graph(
         df = df.sort_values(by=sort_cols)
 
     if valid_split_cols:
-        split_val_series = df[valid_split_cols[0]].fillna("").astype(str)
+        split_val_series = df[valid_split_cols[0]].map(lambda x: str(x) if pd.notnull(x) else "")
         for col in valid_split_cols[1:]:
-            split_val_series = split_val_series + " | " + df[col].fillna("").astype(str)
+            split_val_series = split_val_series + " | " + df[col].map(lambda x: str(x) if pd.notnull(x) else "")
 
         df["plot_series"] = df["method"] + " | " + split_val_series
         unique_splits = split_val_series.unique().tolist()
