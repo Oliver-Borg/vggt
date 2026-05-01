@@ -1018,7 +1018,6 @@ def _process_single_render(
     p: Path,
     folder_name: str,
     x_axis: str | None = None,
-    last_row: bool = False,
     show_depth: bool = False,
     show_gt: bool = False,
     render_num: int = 0,
@@ -1031,7 +1030,10 @@ def _process_single_render(
         return images
 
     render = render_files[render_num]
-    depth_factors: list[float] = (row.get("raw_metrics", {}) or {}).get("depth_factor", [])
+    raw_metrics = row.get("raw_metrics", {})
+    if not isinstance(raw_metrics, dict):
+        raw_metrics = {}
+    depth_factors: list[float] = raw_metrics.get("depth_factor", [])
     depth_factor = depth_factors[render_num] if depth_factors else None
 
     try:
@@ -1066,6 +1068,11 @@ def _process_single_render(
             gt_img, pred_img, _, _ = divide_img(img, splits=4)
             depth = None
 
+        if show_gt:
+            gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
+            images.append(gt_img)
+            return images
+
         # TODO Decide if we want to do one of these
         # Paste a small version of the diff img in the bottom left corner of the pred_img
         # diff_img = diff_img.resize((diff_img.width // 4, diff_img.height // 4))
@@ -1094,9 +1101,9 @@ def _process_single_render(
         if x_axis and pd.notna(row.get(x_axis)):
             config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
-        psnr_values: list[float] = (row.get("raw_metrics", {}) or {}).get("psnr", [])
-        lpips_values: list[float] = (row.get("raw_metrics", {}) or {}).get("lpips", [])
-        ssim_values: list[float] = (row.get("raw_metrics", {}) or {}).get("ssim", [])
+        psnr_values: list[float] = raw_metrics.get("psnr", [])
+        lpips_values: list[float] = raw_metrics.get("lpips", [])
+        ssim_values: list[float] = raw_metrics.get("ssim", [])
 
         if psnr_values:
             psnr_val = psnr_values[render_num]
@@ -1121,10 +1128,6 @@ def _process_single_render(
 
         pred_img = add_text_to_image(pred_img, label_text, 48)
         images.append(pred_img)
-
-        if last_row and show_gt:
-            gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
-            images.append(gt_img)
 
     except Exception as e:
         print(f"Error processing image {render}: {e}")
@@ -1174,7 +1177,6 @@ def create_render_figure(
 
     df = df.copy()
     for i, (idx, row) in enumerate(df.iterrows()):
-        last_row = i == len(df) - 1
         file_path = row.get("file_path", "")
         if not file_path or pd.isna(file_path):
             continue
@@ -1184,6 +1186,19 @@ def create_render_figure(
             render_src_dir = p.parents[1] / "renders"
             if render_src_dir.exists():
                 folder_name = p.parents[1].name
+                if i == 0 and show_gt:
+                    for render_num in render_nums:
+                        processed_images = _process_single_render(
+                            row,
+                            render_src_dir,
+                            p,
+                            folder_name,
+                            x_axis,
+                            show_depth,
+                            True,
+                            render_num,
+                        )
+                        images_to_stack.extend(processed_images)
                 for render_num in render_nums:
                     processed_images = _process_single_render(
                         row,
@@ -1191,9 +1206,8 @@ def create_render_figure(
                         p,
                         folder_name,
                         x_axis,
-                        last_row,
                         show_depth,
-                        show_gt,
+                        False,
                         render_num,
                     )
                     images_to_stack.extend(processed_images)
