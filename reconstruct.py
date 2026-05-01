@@ -17,7 +17,7 @@ import cv2
 import tqdm
 import pycolmap
 
-from cam_utils import get_poses
+from pycolmap_utils import get_poses
 from check_sparse import check_sparse_folder
 from combine_clouds import align_to_world_space, load_point_cloud, save_cameras_json
 from demo_colmap import VGGTProfiling, run_vggt

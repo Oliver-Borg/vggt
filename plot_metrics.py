@@ -19,6 +19,9 @@ import seaborn as sns
 from PIL import Image, ImageDraw, ImageFont
 import scienceplots
 
+from .plot_cameras import CameraSeries, plot_extrinsics
+from .cam_utils import load_poses_from_json
+
 plt.style.use(["science", "grid"])
 
 textwidth = 7.00697
@@ -324,6 +327,7 @@ def load_metrics_to_df(
                     record.update(params)
                     record.update(metrics)
                     record["file_path"] = file_path
+                    record[f"{source_name}_file_path"] = file_path
                     record["folder"] = folder_name
                     if source_name == "gsplat":
                         records[key] = record
@@ -335,6 +339,7 @@ def load_metrics_to_df(
                                     key1 = (sfm_folder, gsplat_folder + f"_val_step{step - 1}.json")
                                     if key1 in records:
                                         records[key1].update(metrics)
+                                        records[key1][f"{source_name}_file_path"] = file_path
                                         updated = True
 
                         # If no corresponding gsplat record exists, save sfm as a standalone record
@@ -345,7 +350,13 @@ def load_metrics_to_df(
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                     continue
 
-    records_list = list(records.values())
+    records_list = [
+    ]
+    for (k, v) in records.items():
+        if isinstance(k, tuple):
+            records_list.append({**v, "input_folder": k[0], "output_folder": k[1]})
+        else:
+            records_list.append(v)
 
     for record in records_list:
         if record.get("real_num_points") is not None and record.get("num_points") is None:
@@ -1252,6 +1263,64 @@ def create_render_figure(
             print("LaTeX figure saved:", Path(tex_out_path))
 
 
+def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None):
+    dest_base.mkdir(parents=True, exist_ok=True)
+    series_list: list[CameraSeries] = []
+    df = df.copy()
+    cmap = plt.get_cmap('tab10')
+    for i, (idx, row) in enumerate(df.iterrows()):
+        file_path = row.get("sfm_file_path", "")
+        if not file_path or pd.isna(file_path):
+            continue
+
+        p = Path(file_path)
+        if p.name == "eval_results.json":
+            if i == 0:
+                pose_file = p.parent / "gt_cameras.json"
+                color = cmap(i)
+                color = (*color[:3], 0.5)
+                series = CameraSeries(
+                    label="Ground Truth",
+                    colour=color,
+                    poses=load_poses_from_json(pose_file),
+                )
+                series_list.append(series)
+
+            config_name = (
+                str(row.get("plot_series", p.parent.name))
+                .replace("colmap", "COLMAP")
+                .replace("vggt", "VGGT")
+                .replace("gt", "GT")
+                .replace("combined", "Combined")
+            )
+            if x_axis and pd.notna(row.get(x_axis)):
+                config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+
+            pose_file = p.parent / "aligned_cameras.json"
+            color = cmap(i + 1)
+            color = (*color[:3], 0.5)
+            series = CameraSeries(
+                label=config_name,
+                colour=color,
+                poses=load_poses_from_json(pose_file),
+            )
+            series_list.append(series)
+
+    largest_series = series_list[2]
+    for series in series_list[2:]:
+        if len(series.poses) > len(largest_series.poses):
+            largest_series = series
+
+    image_names = list(largest_series.poses.keys())
+
+    plot_extrinsics(
+        # [series_list[0], series_list[-1]],
+        series_list,
+        dest_base,
+        image_names,
+    )
+
+
 def plot_graph(
     name: str,
     prefix: str,
@@ -1665,6 +1734,8 @@ def plot_graph(
                 show_gt=show_gt,
                 render_nums=render_nums,
             )
+            plot_cameras(render_df, Path(suffix + "_cameras"), x_axis=x_axis)
+
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
         os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
@@ -1674,6 +1745,20 @@ def plot_graph(
         latest_full_pdf = f"{latest_suffix}_full.pdf"
         shutil.copy2(str(Path(out_file).with_suffix(".pdf")), latest_full_pdf)
         print("Latest copy saved:", Path(latest_full_pdf))
+
+        # Cameras saved to Path(suffix + "_cameras") / "camera_alignment.png"
+        # and Path(suffix + "_cameras") / "camera_alignment.pdf"
+
+        latest_camera_png = f"{latest_suffix}_camera_alignment.png"
+        camera_png_file = Path(suffix + "_cameras") / "camera_alignment.png"
+        if camera_png_file.exists():
+            shutil.copy2(camera_png_file, latest_camera_png)
+            print("Latest copy saved:", Path(latest_camera_png))
+        latest_camera_pdf = f"{latest_suffix}_camera_alignment.pdf"
+        camera_pdf_file = Path(suffix + "_cameras") / "camera_alignment.pdf"
+        if camera_pdf_file.exists():
+            shutil.copy2(camera_pdf_file, latest_camera_pdf)
+            print("Latest copy saved:", Path(latest_camera_pdf))
 
         latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
         latex_label = f"fig:{experiment_name}_{dataset_name}" if experiment_name else f"fig:{prefix}_{dataset_name}"

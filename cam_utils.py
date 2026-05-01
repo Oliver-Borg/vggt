@@ -1,5 +1,7 @@
+import json
+from pathlib import Path
+
 import numpy as np
-import pycolmap
 from scipy.spatial.transform import Rotation as Rot
 
 """
@@ -44,25 +46,18 @@ def w2c_to_c2w(translation: np.ndarray, rotation_matrix: np.ndarray) -> tuple[np
     return invert_transform(translation, rotation_matrix)
 
 
-def cfw_to_w2c(cfw: pycolmap.Rigid3d) -> tuple[np.ndarray, np.ndarray]:
-    rotation_matrix = quat_to_mat(cfw.rotation.quat)  # np.roll(cfw.rotation.quat, -1)
-    translation = cfw.translation.copy()
-    return translation, rotation_matrix
+def load_poses_from_json(path: Path) -> dict[str, np.ndarray]:
+    with open(path, "r") as f:
+        data = json.load(f)
 
-
-def w2c_to_cfw(translation: np.ndarray, rotation_matrix: np.ndarray) -> pycolmap.Rigid3d:
-    cfw = pycolmap.Rigid3d()
-    cfw.rotation.quat = mat_to_quat(rotation_matrix)
-    cfw.translation = translation.copy()
-    return cfw
-
-
-def cfw_to_c2w(cfw: pycolmap.Rigid3d) -> tuple[np.ndarray, np.ndarray]:
-    return w2c_to_c2w(*cfw_to_w2c(cfw))
-
-
-def c2w_to_cfw(translation: np.ndarray, rotation_matrix: np.ndarray) -> pycolmap.Rigid3d:
-    return w2c_to_cfw(*c2w_to_w2c(translation, rotation_matrix))
+    poses = {}
+    for image_name, frame in data.items():
+        qvec = np.array(frame["extrinsics"]["qvec"])
+        tvec = np.array(frame["extrinsics"]["tvec"])
+        rotation_matrix = quat_to_mat(qvec)
+        c2w = build_matrix(tvec, rotation_matrix)
+        poses[image_name] = c2w
+    return poses
 
 
 def umeyama_alignment_two_points(
@@ -152,13 +147,6 @@ def umeyama_alignment(
 
     translation = p_mean - scale * np.dot(rotation, q_mean)
     return float(scale), rotation, translation
-
-
-def get_poses(recon: pycolmap.Reconstruction) -> dict[str, np.ndarray]:
-    to_return = {}
-    for image in recon.images.values():
-        to_return[image.name] = build_matrix(*cfw_to_c2w(image.cam_from_world))
-    return to_return
 
 
 def get_metrics(

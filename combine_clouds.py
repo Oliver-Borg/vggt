@@ -9,16 +9,21 @@ import cv2
 import os
 
 from cam_utils import (
-    c2w_to_cfw,
-    cfw_to_c2w,
-    cfw_to_w2c,
     get_metrics,
     mat_to_quat,
-    get_poses,
     umeyama_alignment,
     umeyama_alignment_two_points,
     verify_look_at_origin,
 )
+
+from pycolmap_utils import (
+    c2w_to_cfw,
+    cfw_to_c2w,
+    cfw_to_w2c,
+    get_poses,
+    load_cameras_json,
+)
+
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap_wo_track, pycolmap_to_batch_np_matrix_full
 
 
@@ -227,7 +232,12 @@ def load_point_clouds(point_source_path: Path) -> list[pycolmap.Reconstruction]:
 
 
 def load_cameras(camera_source_path: Path) -> pycolmap.Reconstruction:
-    rec = load_json_data(camera_source_path) if camera_source_path.is_file() else load_point_cloud(camera_source_path)
+    if camera_source_path.is_file():
+        rec1 = load_json_data(camera_source_path)
+        rec2 = load_cameras_json(camera_source_path)
+
+        return rec1 if rec1.num_images() > rec2.num_images() else rec2
+    rec = load_point_cloud(camera_source_path)
     return rec
 
 
@@ -659,9 +669,8 @@ if __name__ == "__main__":
     shutil.copytree(Path(args.camera_source) / "images", Path(args.output_dir) / "images", dirs_exist_ok=True)
     shutil.copytree(Path(args.point_source) / "images", Path(args.output_dir) / "images", dirs_exist_ok=True)
     if os.path.exists(Path(args.camera_source) / "gt_cameras.json"):
-        shutil.copytree(
-            Path(args.camera_source) / "gt_cameras.json", Path(args.output_dir) / "gt_cameras.json", dirs_exist_ok=True
-        )
+        # TODO Make sure these all save
+        shutil.copy2(Path(args.camera_source) / "gt_cameras.json", Path(args.output_dir) / "gt_cameras.json")
     if os.path.exists(Path(args.camera_source) / "depths"):
         shutil.copytree(Path(args.camera_source) / "depths", Path(args.output_dir) / "depths", dirs_exist_ok=True)
     if os.path.exists(Path(args.point_source) / "depths"):
@@ -686,7 +695,8 @@ if __name__ == "__main__":
             },
             f,
         )
-    pred_pcd = load_cameras(Path(args.output_dir) / "sparse")
-    gt_pcd = load_cameras(Path(args.output_dir) / "gt_cameras.json")
-    pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
-    save_cameras_json(pred_pcd, Path(args.output_dir) / "aligned_cameras.json")
+    if os.path.exists(Path(args.output_dir) / "gt_cameras.json"):
+        pred_pcd = load_cameras(Path(args.output_dir) / "sparse")
+        gt_pcd = load_cameras(Path(args.output_dir) / "gt_cameras.json")
+        pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
+        save_cameras_json(pred_pcd, Path(args.output_dir) / "aligned_cameras.json")
