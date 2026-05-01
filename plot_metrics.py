@@ -1263,7 +1263,7 @@ def create_render_figure(
             print("LaTeX figure saved:", Path(tex_out_path))
 
 
-def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None):
+def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None, varying_colors: bool = False):
     dest_base.mkdir(parents=True, exist_ok=True)
     series_list: list[CameraSeries] = []
     df = df.copy()
@@ -1277,7 +1277,7 @@ def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None):
         if p.name == "eval_results.json":
             if i == 0:
                 pose_file = p.parent / "gt_cameras.json"
-                color = cmap(i)
+                color = cmap(i) if varying_colors else (0.0, 0.0, 1.0, 0.5)
                 color = (*color[:3], 0.5)
                 series = CameraSeries(
                     label="Ground Truth",
@@ -1297,7 +1297,7 @@ def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None):
                 config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
             pose_file = p.parent / "aligned_cameras.json"
-            color = cmap(i + 1)
+            color = cmap(i + 1) if varying_colors else (1.0, 0.0, 0.0, 0.5)
             color = (*color[:3], 0.5)
             series = CameraSeries(
                 label=config_name,
@@ -1314,8 +1314,8 @@ def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None):
     image_names = list(largest_series.poses.keys())
 
     plot_extrinsics(
-        # [series_list[0], series_list[-1]],
-        series_list,
+        series_list[0],
+        series_list[1:],
         dest_base,
         image_names,
     )

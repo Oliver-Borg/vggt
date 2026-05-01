@@ -9,6 +9,13 @@ from .cam_alignment import get_alignment_rotation
 from .cam_utils import load_poses_from_json
 
 
+@dataclass
+class CameraSeries:
+    label: str
+    colour: tuple[float, float, float] | tuple[float, float, float, float]
+    poses: dict[str, np.ndarray]
+
+
 def plot_cameras(
     poses: dict[str, np.ndarray],
     colors: dict[str, tuple[float, float, float, float]] | dict[str, tuple[float, float, float]],
@@ -85,58 +92,88 @@ def plot_cameras(
             marker="x",
         )
 
-    ax.quiver(xs, ys, dxs, dys, color=colors_list, angles="xy", scale_units="xy", scale=0.5, width=0.003, zorder=1)
+    ax.quiver(xs, ys, dxs, dys, color=colors_list, angles="xy", scale_units="xy", scale=0.5, width=0.0015, zorder=1)
 
     if title is not None:
         ax.set_title(title, fontsize=12)
 
     ax.axis("equal")
+    ax.margins(0.02)
     ax.grid(True, linestyle="--", alpha=0.6)
 
     return ax
 
 
-@dataclass
-class CameraSeries:
-    label: str
-    colour: tuple[float, float, float] | tuple[float, float, float, float]
-    poses: dict[str, np.ndarray]
+def plot_extrinsics(
+    gt_series: CameraSeries,
+    series_list: list[CameraSeries],
+    output_path: Path,
+    image_names: list[str] | None = None,
+    max_cols: int = 4,
+):
+    num_series = len(series_list)
+    if num_series == 0:
+        return
 
+    cols = min(num_series, max_cols)
+    rows = (num_series + cols - 1) // cols
 
-def plot_extrinsics(series_list: list[CameraSeries], output_path: Path, image_names: list[str] | None = None):
-    combined_poses: dict[str, np.ndarray] = {}
-    colours = {}
-    for series in series_list:
+    fig = plt.figure(figsize=(16, 12))
+
+    for idx, series in enumerate(series_list):
+        ax = plt.subplot(rows, cols, idx + 1)
+        plt.sca(ax)
+
+        combined_poses: dict[str, np.ndarray] = {}
+        colours = {}
+
+        # Add GT series
+        for k, v in gt_series.poses.items():
+            if image_names is not None and k not in image_names:
+                continue
+            combined_poses[gt_series.label + k] = v
+            colours[gt_series.label + k] = gt_series.colour
+
+        # Add the current series being compared
         for k, v in series.poses.items():
             if image_names is not None and k not in image_names:
                 continue
             combined_poses[series.label + k] = v
             colours[series.label + k] = series.colour
 
-    fig = plt.figure(figsize=(16, 12))
-    ax_main = plt.subplot2grid((1, 1), (0, 0))
-    plt.sca(ax_main)
-    title = "Aligned Top-Down Camera Poses"
+        plot_cameras(combined_poses, colours)
 
-    plot_cameras(combined_poses, colours, title=title)
+        # Create legend handles for the GT and the current series subplot
+        legend_elements = []
+        if any(k.startswith(gt_series.label) for k in combined_poses):
+            legend_elements.append(
+                lines.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    label=gt_series.label,
+                    markerfacecolor=gt_series.colour,
+                    markersize=10,
+                    markeredgecolor="k",
+                )
+            )
+        if any(k.startswith(series.label) for k in combined_poses):
+            legend_elements.append(
+                lines.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    label=series.label,
+                    markerfacecolor=series.colour,
+                    markersize=10,
+                    markeredgecolor="k",
+                )
+            )
 
-    # Create legend handles for each series that actually contains data
-    legend_elements = [
-        lines.Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="w",
-            label=series.label,
-            markerfacecolor=series.colour,
-            markersize=10,
-            markeredgecolor="k",
-        )
-        for series in series_list
-        if any(k.startswith(series.label) for k in combined_poses)
-    ]
-    if legend_elements:
-        ax_main.legend(handles=legend_elements, loc="upper right", frameon=True, shadow=True)
+        if legend_elements:
+            ax.legend(handles=legend_elements, loc="upper right", frameon=True, shadow=True)
 
     plt.tight_layout()
 
@@ -176,7 +213,8 @@ if __name__ == "__main__":
     )
 
     plot_extrinsics(
-        series_list=[gt_series, pred_series],
+        gt_series=gt_series,
+        series_list=[pred_series],
         output_path=Path(args.output_path),
         image_names=None,
     )
