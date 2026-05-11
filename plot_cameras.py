@@ -204,7 +204,7 @@ def plot_cameras(
             c=colors_arr[mask_down],
             s=40,
             zorder=2,
-            edgecolors="k",
+            edgecolors="none",
             marker="o",
         )
 
