@@ -49,6 +49,9 @@ def load_cameras_json(path: Path) -> pycolmap.Reconstruction:
 
     recon = pycolmap.Reconstruction()
 
+    if "frames" in data:
+        return recon
+
     # Track cameras we've already added so we don't duplicate them
     added_cameras = set()
 

@@ -19,7 +19,7 @@ import pycolmap
 
 from pycolmap_utils import get_poses
 from check_sparse import check_sparse_folder
-from combine_clouds import align_to_world_space, load_point_cloud, save_cameras_json
+from combine_clouds import align_to_world_space, load_cameras, load_point_cloud, load_point_clouds, save_cameras_json
 from demo_colmap import VGGTProfiling, run_vggt
 from reconstruct_args import CAMERA_TYPE, COLMAP, COLMAP_MODE, COPY_MODE, IMAGE_MODE, SAMPLING_MODE, ReconstructArgs
 
@@ -266,6 +266,8 @@ def get_image_list(
     # This means there shouldn't ever be any overlap between these images and evaluation set
     all_images = [im for i, im in enumerate(all_images) if i % 8 != 0]
 
+    assert num_images is None or num_images <= len(all_images)
+
     indices = np.arange(len(all_images))
 
     if not num_images:
@@ -401,7 +403,13 @@ def run_reconstruction(
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
 
-    pcd = load_point_cloud(Path(input_path).parent / "sparse") if args.image_mode == "farthestpose" else None
+    pcd = None
+
+    if args.image_mode == "farthestpose":
+        if "nerf_synthetic" in Path(input_path).parts:
+            pcd = load_cameras(Path(input_path).parent / "transforms_train.json")
+        else:
+            pcd = load_cameras(Path(input_path).parent / "sparse")
 
     all_images = get_image_list(all_images, args.num_images, args.seed, args.image_mode, pcd)
 
@@ -425,9 +433,13 @@ def run_reconstruction(
             # TODO Instead of this save aligned_cams.json and gt_cams.json
             # Then in plot_metrics, we can just read these in
             gt_pcd = load_point_cloud(Path(input_path).parent / "sparse")
-            pred_pcd = load_point_cloud(Path(base_out) / "sparse")
-            pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
-            save_cameras_json(pred_pcd, Path(base_out) / "aligned_cameras.json")
+            pred_pcds = load_point_clouds(Path(base_out) / "sparse")
+            for i, pred_pcd in enumerate(pred_pcds):
+                pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
+                if i == 0:
+                    save_cameras_json(pred_pcd, Path(base_out) / "aligned_cameras.json")
+                # TODO Use these to demonstrate partial reconstructions
+                save_cameras_json(pred_pcd, Path(base_out) / f"aligned_cameras{i:04d}.json")
             save_cameras_json(gt_pcd, Path(base_out) / "gt_cameras.json")
         return
 
@@ -495,10 +507,16 @@ def run_reconstruction(
         os.rename(best_path, first_path)
         os.rename(tmp_path, best_path)
 
-    gt_pcd = load_point_cloud(Path(input_path).parent / "sparse")
-    pred_pcd = load_point_cloud(Path(base_out) / "sparse")
-    pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
-    save_cameras_json(pred_pcd, Path(base_out) / "aligned_cameras.json")
+    if "nerf_synthetic" in Path(input_path).parts:
+        gt_pcd = load_cameras(Path(input_path).parent / "transforms_train.json")
+    else:
+        gt_pcd = load_cameras(Path(input_path).parent / "sparse")
+    pred_pcds = load_point_clouds(Path(base_out) / "sparse")
+    for i, pred_pcd in enumerate(pred_pcds):
+        pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
+        if i == 0:
+            save_cameras_json(pred_pcd, Path(base_out) / "aligned_cameras.json")
+        save_cameras_json(pred_pcd, Path(base_out) / f"aligned_cameras{i:04d}.json")
     save_cameras_json(gt_pcd, Path(base_out) / "gt_cameras.json")
 
 
@@ -578,6 +596,7 @@ if __name__ == "__main__":
 
         for config_dict in tqdm.tqdm(configs):
             run_args = ReconstructArgs(**config_dict)
+            run_reconstruction(run_args)
             try:
                 run_reconstruction(run_args)
             except Exception as e:

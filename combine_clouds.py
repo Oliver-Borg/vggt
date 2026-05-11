@@ -201,7 +201,7 @@ def load_point_cloud(
             raise ValueError(f"No cameras.bin found in {point_source_path}")
         pcd = pycolmap.Reconstruction(point_source_path)
         return (pcd, point_source_path) if return_path else pcd
-    except ValueError:
+    except (ValueError, FileNotFoundError):
         # We assume a folder is given with 0, 1, 2 etc.
         # In that case we want to find the pcd with the most 3D points
         best_pcd = None
@@ -226,7 +226,11 @@ def load_point_cloud(
 
 def load_point_clouds(point_source_path: Path) -> list[pycolmap.Reconstruction]:
     try:
-        return [load_point_cloud(point_source_path / folder) for folder in os.listdir(point_source_path)]
+        return [
+            load_point_cloud(point_source_path / folder)
+            for folder in os.listdir(point_source_path)
+            if (point_source_path / folder).is_dir() and folder.isnumeric()
+        ] or [load_point_cloud(point_source_path)]
     except ValueError:
         return [load_point_cloud(point_source_path)]
 

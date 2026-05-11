@@ -4,6 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import math
+
 import numpy as np
 
 
@@ -90,7 +92,7 @@ def uniform_limit_trues(
         disc_points = (norm_points * grid_size).round().astype(np.uint32)
         flat_voxel_inds = disc_points[:, 0] * grid_size ** 2 + disc_points[:, 1] * grid_size + disc_points[:, 2]
         unique_flat_voxel_inds, counts = np.unique(flat_voxel_inds, return_counts=True)
-        min_grid_occupancy = counts.mean()
+        min_grid_occupancy = int(math.ceil(counts.mean()))
         cur_size = np.count_nonzero(counts >= min_grid_occupancy)  # Only keep voxels that have >= min_grid_occupancy points
         # cur_size = unique_flat_voxel_inds.size
         if cur_size == max_trues:
