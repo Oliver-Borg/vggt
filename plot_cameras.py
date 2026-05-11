@@ -25,6 +25,8 @@ def plot_cameras(
     linked_poses: dict[str, list[str]] | None = None,
     use_error: bool = False,
     gt_label: str | None = None,
+    max_error_override: float | None = None,
+    R_align_override: np.ndarray | None = None,
 ):
     ax = plt.gca()
     poses_list = list(poses.values())
@@ -32,7 +34,10 @@ def plot_cameras(
     if not poses_list:
         return ax
 
-    R_align = get_alignment_rotation(np.array(poses_list))
+    if R_align_override is not None:
+        R_align = R_align_override
+    else:
+        R_align = get_alignment_rotation(np.array(poses_list))
 
     aligned_centers = {name: R_align @ c2w[:3, 3] for name, c2w in poses.items()}
 
@@ -56,22 +61,26 @@ def plot_cameras(
                         errors[pred_name] = rte
 
         if errors:
-            max_error = max(errors.values()) if errors else 1.0
-            min_error = 0.0  # min error is always 0 for GT
+            max_error = (
+                max_error_override if max_error_override is not None else (max(errors.values()) if errors else 1.0)
+            )
+            max_error = max(max_error, 1e-9)  # Ensure max_error is positive for LogNorm
+
+            # non_zero_errors = [e for e in errors.values() if e > 1e-9]
+            min_error = 1e-3
 
             cmap = plt.get_cmap("jet")
 
+            # Use LogNorm for a logarithmic color scale
+            norm = clrs.LogNorm(vmin=min_error, vmax=max_error)
+
             # Create a color map based on errors
-            error_colors = {
-                name: cmap((error - min_error) / (max_error - min_error + 1e-9))
-                for name, error in errors.items()
-            }
+            error_colors = {name: cmap(norm(error)) if error > 0 else cmap(0.0) for name, error in errors.items()}
             for name, color in colors.items():
                 if color is None and name in error_colors:
                     colors[name] = error_colors[name]
 
             # Add a colorbar to the plot
-            norm = clrs.Normalize(vmin=min_error, vmax=max_error)
             sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
             sm.set_array([])
             cbar = plt.colorbar(sm, ax=ax, orientation="vertical", fraction=0.046, pad=0.04)
@@ -187,7 +196,38 @@ def plot_extrinsics(
     cols = min(num_series, max_cols)
     rows = (num_series + cols - 1) // cols
 
-    fig = plt.figure(figsize=(5 * cols, 4 * rows))
+    fig = plt.figure(figsize=(5 * cols, 4.5 * rows))
+
+    # Pre-calculate a global max RTE for consistent color scaling across all subplots
+    global_max_rte = 0.0
+    R_align_global = None
+    if use_error_colors and num_series > 0:
+        all_poses_for_alignment = list(v for k, v in gt_series.poses.items() if image_names is None or k in image_names)
+        for series in series_list:
+            all_poses_for_alignment.extend(
+                v for k, v in series.poses.items() if image_names is None or k in image_names
+            )
+
+        if all_poses_for_alignment:
+            R_align_global = get_alignment_rotation(np.array(all_poses_for_alignment))
+            gt_centers_aligned = {
+                k: R_align_global @ v[:3, 3]
+                for k, v in gt_series.poses.items()
+                if image_names is None or k in image_names
+            }
+
+            for series in series_list:
+                for k, v in series.poses.items():
+                    if (image_names is not None and k not in image_names) or k not in gt_centers_aligned:
+                        continue
+                    pred_center_aligned = R_align_global @ v[:3, 3]
+                    rte = np.linalg.norm(pred_center_aligned - gt_centers_aligned[k])
+                    global_max_rte = max(global_max_rte, rte)
+
+    if use_error_colors:
+        min_error_for_norm = 1e-3  # Matching plot_cameras
+        norm = clrs.LogNorm(vmin=min_error_for_norm, vmax=max(global_max_rte, min_error_for_norm + 1e-9))
+        cmap = plt.get_cmap("jet")
 
     for idx, series in enumerate(series_list):
         ax = plt.subplot(rows, cols, idx + 1)
@@ -222,6 +262,8 @@ def plot_extrinsics(
             linked_poses=linked_poses,
             use_error=use_error_colors,
             gt_label=gt_series.label,
+            max_error_override=global_max_rte if use_error_colors else None,
+            R_align_override=R_align_global if use_error_colors else None,
         )
 
         # Create legend handles for the GT and the current series subplot
@@ -240,6 +282,28 @@ def plot_extrinsics(
                 )
             )
         if any(k.startswith(series.label) for k in combined_poses):
+            # When using error colors, the legend marker should be neutral
+            # as the colorbar indicates the error scale.
+            if use_error_colors:
+                # Calculate the local max error for this specific subplot
+                local_max_rte = 0.0
+                if R_align_global is not None:
+                    gt_centers_aligned = {
+                        k: R_align_global @ v[:3, 3]
+                        for k, v in gt_series.poses.items()
+                        if image_names is None or k in image_names
+                    }
+                    for k, v in series.poses.items():
+                        if (image_names is not None and k not in image_names) or k not in gt_centers_aligned:
+                            continue
+                        pred_center_aligned = R_align_global @ v[:3, 3]
+                        rte = np.linalg.norm(pred_center_aligned - gt_centers_aligned[k])
+                        local_max_rte = max(local_max_rte, rte)
+                # Get the color corresponding to the local max error from the global colormap
+                pred_marker_face_color = cmap(norm(local_max_rte)) if local_max_rte > 0 else cmap(0.0)
+            else:
+                pred_marker_face_color = series.colour
+
             legend_elements.append(
                 lines.Line2D(
                     [0],
@@ -247,7 +311,7 @@ def plot_extrinsics(
                     marker="o",
                     color="w",
                     label=series.label,
-                    markerfacecolor=series.colour,
+                    markerfacecolor=pred_marker_face_color,
                     markersize=10,
                     markeredgecolor="k",
                 )
@@ -257,12 +321,15 @@ def plot_extrinsics(
             ax.legend(
                 handles=legend_elements,
                 loc="upper center",
-                bbox_to_anchor=(0.5, -0.2),
+                bbox_to_anchor=(0.5, -0.25),
                 ncol=len(legend_elements),
-                frameon=False,
+                frameon=True,
+                fancybox=True,
+                shadow=False,
+                framealpha=0.9,
             )
 
-    plt.tight_layout(rect=(0, 0.1, 1, 1))
+    plt.tight_layout(rect=(0, 0.05, 1, 1))
 
     output_path = Path(output_path)
 
