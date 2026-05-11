@@ -266,6 +266,31 @@ def plot_extrinsics(
             R_align_override=R_align_global if use_error_colors else None,
         )
 
+        # Calculate and display metrics on the subplot
+        local_rtes = []
+        if use_error_colors and R_align_global is not None:
+            for k, v in series.poses.items():
+                if (image_names is not None and k not in image_names) or k not in gt_centers_aligned:
+                    continue
+                pred_center_aligned = R_align_global @ v[:3, 3]
+                rte = np.linalg.norm(pred_center_aligned - gt_centers_aligned[k])
+                local_rtes.append(rte)
+
+        if local_rtes:
+            avg_rte = np.mean(local_rtes)
+            num_aligned = len(local_rtes)
+            text_str = f"Avg. RTE: {avg_rte:.4f}\nNum Aligned: {num_aligned}"
+            ax.text(
+                0.95,
+                0.95,
+                text_str,
+                transform=ax.transAxes,
+                fontsize=8,
+                verticalalignment="top",
+                horizontalalignment="right",
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7),
+            )
+
         # Create legend handles for the GT and the current series subplot
         legend_elements = []
         if any(k.startswith(gt_series.label) for k in combined_poses):
@@ -285,21 +310,7 @@ def plot_extrinsics(
             # When using error colors, the legend marker should be neutral
             # as the colorbar indicates the error scale.
             if use_error_colors:
-                # Calculate the local max error for this specific subplot
-                local_max_rte = 0.0
-                if R_align_global is not None:
-                    gt_centers_aligned = {
-                        k: R_align_global @ v[:3, 3]
-                        for k, v in gt_series.poses.items()
-                        if image_names is None or k in image_names
-                    }
-                    for k, v in series.poses.items():
-                        if (image_names is not None and k not in image_names) or k not in gt_centers_aligned:
-                            continue
-                        pred_center_aligned = R_align_global @ v[:3, 3]
-                        rte = np.linalg.norm(pred_center_aligned - gt_centers_aligned[k])
-                        local_max_rte = max(local_max_rte, rte)
-                # Get the color corresponding to the local max error from the global colormap
+                local_max_rte = max(local_rtes) if local_rtes else 0.0
                 pred_marker_face_color = cmap(norm(local_max_rte)) if local_max_rte > 0 else cmap(0.0)
             else:
                 pred_marker_face_color = series.colour
