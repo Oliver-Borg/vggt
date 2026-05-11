@@ -1586,7 +1586,7 @@ def plot_graph(
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
-        {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count", "direction": "↑"},
+        {"y": "real_num_points", "title": "Initial Points ↑", "ylabel": "Count", "direction": "↑"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
@@ -1955,6 +1955,8 @@ def plot_table(
     if split_param:
         split_cols = [p.strip() for p in split_param.split(",") if p.strip()]
         columns_to_include.extend(split_cols)
+    else:
+        split_cols = []
 
     columns_to_include.extend(metric_keys)
 
@@ -1962,12 +1964,12 @@ def plot_table(
     columns_to_include = list(dict.fromkeys(columns_to_include))
     # Keep only existing columns
     columns_to_include = [col for col in columns_to_include if col in df.columns]
-    df_table = df[columns_to_include].drop_duplicates()
 
     non_metric_cols = [col for col in columns_to_include if col not in metric_keys]
 
     # Take the mean of all metrics based on non_metric_cols
-    df_table = df_table.groupby(non_metric_cols).mean().reset_index()
+    df_for_agg = df[columns_to_include]
+    df_table = df_for_agg.groupby(non_metric_cols, dropna=False).mean().reset_index()
 
     # Format method names for presentation (feature from plot_graph)
     if "choice" in df_table.columns:
@@ -1976,15 +1978,23 @@ def plot_table(
         )
 
     # Sort the dataframe
-    sort_cols = []
+    sort_cols = ["choice"]
     if x_axis and x_axis in df_table.columns:
         sort_cols.append(x_axis)
-    if split_param:
-        split_cols = [p.strip() for p in split_param.split(",") if p.strip()]
-        sort_cols.extend([c for c in split_cols if c in df_table.columns])
-    sort_cols.extend(["method", "choice", "seed"])
+    sort_cols.extend([c for c in split_cols if c in df_table.columns])
+    sort_cols.extend(["method", "seed"])
     sort_cols = [col for col in sort_cols if col in df_table.columns]
-    df_table = df_table.sort_values(by=sort_cols)
+    if sort_cols:
+        df_table = df_table.sort_values(by=sort_cols)
+
+    # After grouping and averaging, some integer columns might become float.
+    # Let's try to convert them back if they are whole numbers.
+    for col in df_table.columns:
+        if pd.api.types.is_float_dtype(df_table[col]):
+            # Check if all non-NaN values are whole numbers
+            if (df_table[col].dropna() % 1 == 0).all():
+                # Using Int64 to support NaNs
+                df_table[col] = df_table[col].astype("Int64")
 
     rename_map = {}
     if "choice" in df_table.columns:
@@ -2000,23 +2010,77 @@ def plot_table(
 
     for m in metric_keys:
         if m in df_table.columns and m in metrics:
-            rename_map[m] = f"{metrics[m]['title']}"
+            title = metrics[m]["title"]
+            if m == "eval_rre":
+                title = title.replace("Validation Step", "Val")
+            if m == "eval_rte":
+                title = title.replace("Validation Step", "Val")
+            rename_map[m] = title
 
-    df_table = df_table.rename(columns=rename_map)
+    df_table_renamed = df_table.rename(columns=rename_map)
+    inv_rename_map = {v: k for k, v in rename_map.items()}
 
     # Dynamic variables for LaTeX table
     latex_caption = f"{title} ({str(dataset_name).title()})" if title else f"{prefix} - {dataset_name}"
     latex_label = f"tab:{experiment_name}_{dataset_name}" if experiment_name else f"tab:{prefix}_{dataset_name}"
 
+    # Generate column format string and formatters for LaTeX
+    column_format = ""
+    formatters = {}
+    for col_name in df_table_renamed.columns:
+        col = df_table_renamed[col_name]
+        original_metric_key = inv_rename_map.get(col_name)
+
+        is_metric = original_metric_key and original_metric_key in metrics
+
+        if pd.api.types.is_numeric_dtype(col):
+            column_format += "r"
+
+            best_val, second_best_val = None, None
+
+            if is_metric:
+                metric_info = metrics.get(original_metric_key, {})
+                direction = metric_info.get("direction")
+
+                if direction:
+                    sorted_vals = col.dropna().sort_values(ascending=(direction == "↓"))
+                    unique_sorted_vals = sorted_vals.unique()
+                    if len(unique_sorted_vals) > 0:
+                        best_val = unique_sorted_vals[0]
+                    if len(unique_sorted_vals) > 1:
+                        second_best_val = unique_sorted_vals[1]
+
+            def create_formatter(is_int, best, second_best):
+                def formatter(x):
+                    if pd.isna(x):
+                        return ""
+                    s = f"{x:d}" if is_int else f"{x:.3f}"
+                    if best is not None and np.isclose(x, best):
+                        return f"\\textbf{{{s}}}"
+                    if second_best is not None and np.isclose(x, second_best):
+                        return f"\\underline{{{s}}}"
+                    return s
+
+                return formatter
+
+            is_integer = pd.api.types.is_integer_dtype(col)
+            formatters[col_name] = create_formatter(is_integer, best_val, second_best_val)
+
+        else:
+            column_format += "l"
+            formatters[col_name] = lambda x: str(x) if pd.notna(x) else ""
+
     # Generate LaTeX table
-    latex_table = df_table.to_latex(
+    latex_table = df_table_renamed.to_latex(
         index=False,
-        float_format="%.3f",
+        formatters=formatters,
+        column_format=column_format,
         caption=latex_caption,
         label=latex_label,
         longtable=False,
         escape=False,
         position="H",
+        na_rep="",
     )
 
     # Save to file
