@@ -578,6 +578,7 @@ def plot_metric(
             palette=colors,
             errorbar=("pi", 100),
             err_style="band",
+            err_kws={"alpha": 0.1},
             ax=ax,
         )
 
@@ -1521,10 +1522,12 @@ def plot_graph(
         "gt": {"marker": "s", "dashes": (4, 4), "hatch": "\\\\\\"},
         "combined": {"marker": "D", "dashes": (1, 1), "hatch": "xxx"},
     }
-    pal = sns.color_palette("tab10", n_colors=len(unique_splits))
+
     if shared_colors:
+        pal = sns.color_palette("tab10", n_colors=len(unique_splits))
         val_to_color = dict(zip(unique_splits, pal))
     else:
+        pal = sns.color_palette("tab10", n_colors=len(unique_series))
         val_to_color = dict(zip(unique_series, pal))
 
     color_map = {}
@@ -1574,14 +1577,14 @@ def plot_graph(
     # TODO Make this a parameter for which metrics to use
     metrics_config = [
         {"y": "rre", "title": "RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
-        {"y": "rte", "title": "RTE ↓", "ylabel": "Norm. Units", "direction": "↓"},
+        {"y": "rte", "title": "RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
         {"y": "psnr", "title": "PSNR ↑", "ylabel": "dB", "direction": "↑"},
         {"y": "lpips", "title": "LPIPS ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "ssim", "title": "SSIM ↑", "ylabel": "Score", "direction": "↑"},
         {"y": "quality", "title": "Composite Quality ↑", "ylabel": "Score", "direction": "↑"},
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count", "direction": "↓"},
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
-        {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓"},
+        {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
         {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count", "direction": "↑"},
     ]
