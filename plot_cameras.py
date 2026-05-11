@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 from dataclasses import dataclass
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +21,7 @@ def plot_cameras(
     poses: dict[str, np.ndarray],
     colors: dict[str, tuple[float, float, float, float]] | dict[str, tuple[float, float, float]],
     title: str | None = None,
+    linked_poses: dict[str, list[str]] | None = None,
 ):
     ax = plt.gca()
     poses_list = list(poses.values())
@@ -28,6 +30,28 @@ def plot_cameras(
         return ax
 
     R_align = get_alignment_rotation(np.array(poses_list))
+
+    aligned_centers = {name: R_align @ c2w[:3, 3] for name, c2w in poses.items()}
+
+    if linked_poses:
+        for link_group in linked_poses.values():
+            if len(link_group) > 1:
+                first_pose_name = link_group[0]
+                if first_pose_name not in aligned_centers:
+                    continue
+                first_center = aligned_centers[first_pose_name]
+                for other_pose_name in link_group[1:]:
+                    if other_pose_name not in aligned_centers:
+                        continue
+                    other_center = aligned_centers[other_pose_name]
+                    ax.plot(
+                        [first_center[0], other_center[0]],
+                        [first_center[1], other_center[1]],
+                        color="gray",
+                        linestyle="--",
+                        linewidth=0.5,
+                        zorder=0,
+                    )
 
     xs, ys = [], []
     dxs, dys = [], []
@@ -40,7 +64,7 @@ def plot_cameras(
     for name, c2w in poses.items():
         # Apply alignment
         # Camera center in world coordinates: c2w[:3, 3]
-        center = R_align @ c2w[:3, 3]
+        center = aligned_centers[name]
         # Look direction in world coordinates: Z-axis of c2w
         look_dir = R_align @ c2w[:3, 2]
 
@@ -118,7 +142,7 @@ def plot_extrinsics(
     cols = min(num_series, max_cols)
     rows = (num_series + cols - 1) // cols
 
-    fig = plt.figure(figsize=(16, 12))
+    fig = plt.figure(figsize=(4 * cols, 4 * rows))
 
     for idx, series in enumerate(series_list):
         ax = plt.subplot(rows, cols, idx + 1)
@@ -126,6 +150,7 @@ def plot_extrinsics(
 
         combined_poses: dict[str, np.ndarray] = {}
         colours = {}
+        linked_poses = defaultdict(list)
 
         # Add GT series
         for k, v in gt_series.poses.items():
@@ -133,6 +158,7 @@ def plot_extrinsics(
                 continue
             combined_poses[gt_series.label + k] = v
             colours[gt_series.label + k] = gt_series.colour
+            linked_poses[k].append(gt_series.label + k)
 
         # Add the current series being compared
         for k, v in series.poses.items():
@@ -140,8 +166,9 @@ def plot_extrinsics(
                 continue
             combined_poses[series.label + k] = v
             colours[series.label + k] = series.colour
+            linked_poses[k].append(series.label + k)
 
-        plot_cameras(combined_poses, colours)
+        plot_cameras(combined_poses, colours, linked_poses=linked_poses)
 
         # Create legend handles for the GT and the current series subplot
         legend_elements = []

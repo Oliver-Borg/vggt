@@ -1335,7 +1335,7 @@ def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None, v
         if p.name == "eval_results.json":
             if i == 0:
                 pose_file = p.parent / "gt_cameras.json"
-                color = cmap(i) if varying_colors else (0.0, 0.0, 1.0, 0.5)
+                color = cmap(i) if varying_colors else (0.5, 0.5, 0.5, 0.5)
                 color = (*color[:3], 0.5)
                 series = CameraSeries(
                     label="Ground Truth",
