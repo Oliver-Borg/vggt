@@ -357,7 +357,7 @@ def load_metrics_to_df(
                     continue
 
     records_list = []
-    for (k, v) in records.items():
+    for k, v in records.items():
         if isinstance(k, tuple):
             records_list.append({**v, "input_folder": k[0], "output_folder": k[1]})
         else:
@@ -487,15 +487,20 @@ def plot_metric(
     # df[x] = df[x].fillna(0)
 
     _df = df.copy()
-    for raw_key in ("raw_eval_metrics", "raw_metrics",):
+    for raw_key in (
+        "raw_eval_metrics",
+        "raw_metrics",
+    ):
         if plot_raw and raw_key in _df.columns:
+
             def extract_raw(row):
                 if isinstance(row.get(raw_key), dict) and y in row.get(raw_key, {}):
                     return row[raw_key][y]
                 return [row.get(y)]
+
             _df[y] = _df.apply(extract_raw, axis=1)
             _df = _df.explode(y).reset_index(drop=True)
-            _df[y] = pd.to_numeric(_df[y], errors='coerce')
+            _df[y] = pd.to_numeric(_df[y], errors="coerce")
     df = _df
 
     if not x:
@@ -1129,7 +1134,7 @@ def _process_single_render(
             gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
             depth = np.array(depth).mean(axis=-1)
             depth *= depth_factor
-            median_depth = (np.median(np.array(depth)) + 1e-5)
+            median_depth = np.median(np.array(depth)) + 1e-5
             depth = depth / median_depth / 10
             depth = np.clip(depth, 0.0, 1.0)
             depth = Image.fromarray(np_rgb(depth))
@@ -1321,11 +1326,17 @@ def create_render_figure(
             print("LaTeX figure saved:", Path(tex_out_path))
 
 
-def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None, varying_colors: bool = False):
+def plot_cameras(
+    df: pd.DataFrame,
+    dest_base: Path,
+    x_axis: str | None = None,
+    varying_colors: bool = False,
+    use_error_colors: bool = False,
+):
     dest_base.mkdir(parents=True, exist_ok=True)
     series_list: list[CameraSeries] = []
     df = df.copy()
-    cmap = plt.get_cmap('tab10')
+    cmap = plt.get_cmap("tab10")
     for i, (idx, row) in enumerate(df.iterrows()):
         file_path = row.get("sfm_file_path", "")
         if not file_path or pd.isna(file_path):
@@ -1379,6 +1390,7 @@ def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None, v
         series_list[1:],
         dest_base,
         image_names,
+        use_error_colors=use_error_colors,
     )
 
 
@@ -1803,7 +1815,7 @@ def plot_graph(
                 show_gt=show_gt,
                 render_nums=render_nums,
             )
-            plot_cameras(render_df, Path(suffix + "_cameras"), x_axis=x_axis)
+            plot_cameras(render_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
 
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
