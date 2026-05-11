@@ -18,6 +18,54 @@ class CameraSeries:
     poses: dict[str, np.ndarray]
 
 
+def _get_global_alignment(
+    gt_series: CameraSeries,
+    series_list: list[CameraSeries],
+    image_names: list[str] | None,
+) -> np.ndarray | None:
+    """Gathers all poses and computes a single alignment rotation."""
+    all_poses_for_alignment = list(v for k, v in gt_series.poses.items() if image_names is None or k in image_names)
+    for series in series_list:
+        all_poses_for_alignment.extend(v for k, v in series.poses.items() if image_names is None or k in image_names)
+
+    if not all_poses_for_alignment:
+        return None
+
+    return get_alignment_rotation(np.array(all_poses_for_alignment))
+
+
+def _calculate_all_errors(
+    gt_series: CameraSeries,
+    series_list: list[CameraSeries],
+    image_names: list[str] | None,
+    R_align_global: np.ndarray,
+) -> tuple[defaultdict, float]:
+    """Calculates all RTEs for all series given a global alignment."""
+    all_errors = defaultdict(dict)
+    global_max_rte = 0.0
+
+    # Align GT centers once
+    gt_centers_aligned = {
+        k: R_align_global @ v[:3, 3] for k, v in gt_series.poses.items() if image_names is None or k in image_names
+    }
+
+    for series in series_list:
+        series_errors = {}
+        for k, v in series.poses.items():
+            if k not in gt_centers_aligned:
+                continue
+
+            pred_center_aligned = R_align_global @ v[:3, 3]
+            gt_center_aligned = gt_centers_aligned[k]
+            rte = np.linalg.norm(pred_center_aligned - gt_center_aligned)
+
+            series_errors[k] = rte
+            global_max_rte = max(global_max_rte, rte)
+        all_errors[series.label] = series_errors
+
+    return all_errors, global_max_rte
+
+
 def plot_cameras(
     poses: dict[str, np.ndarray],
     colors: dict[str, tuple[float, float, float, float] | tuple[float, float, float] | None],
@@ -27,6 +75,7 @@ def plot_cameras(
     gt_label: str | None = None,
     max_error_override: float | None = None,
     R_align_override: np.ndarray | None = None,
+    errors_override: dict[str, float] | None = None,
 ):
     ax = plt.gca()
     poses_list = list(poses.values())
@@ -43,22 +92,25 @@ def plot_cameras(
 
     if use_error and linked_poses and gt_label:
         errors = {}
-        # For each linked group, calculate RTE
-        for link_group in linked_poses.values():
-            if len(link_group) < 2:
-                continue
+        if errors_override is not None:
+            errors = errors_override
+        else:
+            # For each linked group, calculate RTE if not provided
+            for link_group in linked_poses.values():
+                if len(link_group) < 2:
+                    continue
 
-            gt_pose_name = next((name for name in link_group if name.startswith(gt_label)), None)
-            pred_pose_names = [name for name in link_group if not name.startswith(gt_label)]
+                gt_pose_name = next((name for name in link_group if name.startswith(gt_label)), None)
+                pred_pose_names = [name for name in link_group if not name.startswith(gt_label)]
 
-            if gt_pose_name and gt_pose_name in aligned_centers:
-                gt_center = aligned_centers[gt_pose_name]
-                errors[gt_pose_name] = 0.0  # GT error is 0
-                for pred_name in pred_pose_names:
-                    if pred_name in aligned_centers:
-                        pred_center = aligned_centers[pred_name]
-                        rte = np.linalg.norm(pred_center - gt_center)
-                        errors[pred_name] = rte
+                if gt_pose_name and gt_pose_name in aligned_centers:
+                    gt_center = aligned_centers[gt_pose_name]
+                    errors[gt_pose_name] = 0.0  # GT error is 0
+                    for pred_name in pred_pose_names:
+                        if pred_name in aligned_centers:
+                            pred_center = aligned_centers[pred_name]
+                            rte = np.linalg.norm(pred_center - gt_center)
+                            errors[pred_name] = rte
 
         if errors:
             max_error = (
@@ -66,8 +118,7 @@ def plot_cameras(
             )
             max_error = max(max_error, 1e-9)  # Ensure max_error is positive for LogNorm
 
-            # non_zero_errors = [e for e in errors.values() if e > 1e-9]
-            min_error = 1e-3
+            min_error = 1e-3  # Smallest value for log scale, avoids log(0)
 
             cmap = plt.get_cmap("jet")
 
@@ -199,30 +250,11 @@ def plot_extrinsics(
     fig = plt.figure(figsize=(5 * cols, 4.5 * rows))
 
     # Pre-calculate a global max RTE for consistent color scaling across all subplots
-    global_max_rte = 0.0
-    R_align_global = None
-    if use_error_colors and num_series > 0:
-        all_poses_for_alignment = list(v for k, v in gt_series.poses.items() if image_names is None or k in image_names)
-        for series in series_list:
-            all_poses_for_alignment.extend(
-                v for k, v in series.poses.items() if image_names is None or k in image_names
-            )
-
-        if all_poses_for_alignment:
-            R_align_global = get_alignment_rotation(np.array(all_poses_for_alignment))
-            gt_centers_aligned = {
-                k: R_align_global @ v[:3, 3]
-                for k, v in gt_series.poses.items()
-                if image_names is None or k in image_names
-            }
-
-            for series in series_list:
-                for k, v in series.poses.items():
-                    if (image_names is not None and k not in image_names) or k not in gt_centers_aligned:
-                        continue
-                    pred_center_aligned = R_align_global @ v[:3, 3]
-                    rte = np.linalg.norm(pred_center_aligned - gt_centers_aligned[k])
-                    global_max_rte = max(global_max_rte, rte)
+    R_align_global = _get_global_alignment(gt_series, series_list, image_names)
+    if use_error_colors and R_align_global is not None:
+        all_errors, global_max_rte = _calculate_all_errors(gt_series, series_list, image_names, R_align_global)
+    else:
+        all_errors, global_max_rte = defaultdict(dict), 0.0
 
     if use_error_colors:
         min_error_for_norm = 1e-3  # Matching plot_cameras
@@ -256,6 +288,17 @@ def plot_extrinsics(
                 colours[series.label + k] = series.colour
             linked_poses[k].append(series.label + k)
 
+        # Prepare errors for the current subplot
+        subplot_errors = {}
+        if use_error_colors:
+            pred_errors_by_key = all_errors.get(series.label, {})
+            for k, rte in pred_errors_by_key.items():
+                subplot_errors[series.label + k] = rte
+            # Add GT errors (which are 0)
+            for k in pred_errors_by_key:
+                if (gt_series.label + k) in combined_poses:
+                    subplot_errors[gt_series.label + k] = 0.0
+
         plot_cameras(
             combined_poses,
             colours,
@@ -263,18 +306,12 @@ def plot_extrinsics(
             use_error=use_error_colors,
             gt_label=gt_series.label,
             max_error_override=global_max_rte if use_error_colors else None,
-            R_align_override=R_align_global if use_error_colors else None,
+            R_align_override=R_align_global,
+            errors_override=subplot_errors if use_error_colors else None,
         )
 
         # Calculate and display metrics on the subplot
-        local_rtes = []
-        if use_error_colors and R_align_global is not None:
-            for k, v in series.poses.items():
-                if (image_names is not None and k not in image_names) or k not in gt_centers_aligned:
-                    continue
-                pred_center_aligned = R_align_global @ v[:3, 3]
-                rte = np.linalg.norm(pred_center_aligned - gt_centers_aligned[k])
-                local_rtes.append(rte)
+        local_rtes = list(all_errors.get(series.label, {}).values())
 
         if local_rtes:
             avg_rte = np.mean(local_rtes)
