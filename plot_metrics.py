@@ -356,8 +356,7 @@ def load_metrics_to_df(
                 except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                     continue
 
-    records_list = [
-    ]
+    records_list = []
     for (k, v) in records.items():
         if isinstance(k, tuple):
             records_list.append({**v, "input_folder": k[0], "output_folder": k[1]})
@@ -385,13 +384,17 @@ def load_metrics_to_df(
     return convert_to_nullable_ints(df_merged)
 
 
-def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float]:
+def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, float]]:
     """Extracts RRE and RTE from SfM json."""
     if "metrics" in data and "mean_rre_deg" in data["metrics"]:
         return {
             "rre": data["metrics"]["mean_rre_deg"],
             "rte": data["metrics"]["mean_rte"],
             "num_aligned": data["metrics"]["num_aligned"],
+            "raw_eval_metrics": {
+                "rre": data["metrics"]["all_rre"],
+                "rte": data["metrics"]["all_rte"],
+            },
         }
     return {}
 
@@ -470,6 +473,7 @@ def plot_metric(
     y_log_scale: bool = False,
     hatches: Dict[str, str] | None = None,
     single_legend: bool = False,
+    plot_raw: bool = False,
 ) -> None:
     """
     Generic plotting function using Seaborn.
@@ -481,6 +485,18 @@ def plot_metric(
         ax.text(0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes)
         return
     # df[x] = df[x].fillna(0)
+
+    _df = df.copy()
+    for raw_key in ("raw_eval_metrics", "raw_metrics",):
+        if plot_raw and raw_key in _df.columns:
+            def extract_raw(row):
+                if isinstance(row.get(raw_key), dict) and y in row.get(raw_key, {}):
+                    return row[raw_key][y]
+                return [row.get(y)]
+            _df[y] = _df.apply(extract_raw, axis=1)
+            _df = _df.explode(y).reset_index(drop=True)
+            _df[y] = pd.to_numeric(_df[y], errors='coerce')
+    df = _df
 
     if not x:
         hue_order = df[series_col].unique()
@@ -560,10 +576,44 @@ def plot_metric(
             ax=ax,
         )
 
+        # Max line
+        sns.lineplot(
+            data=plot_df,
+            x=x,
+            y=y,
+            hue=series_col,
+            style=series_col,
+            markers=False,
+            dashes=dashes,
+            palette=colors,
+            estimator="max",
+            errorbar=None,
+            ax=ax,
+            legend=False,
+            alpha=0.5,
+        )
+        # Min line
+        sns.lineplot(
+            data=plot_df,
+            x=x,
+            y=y,
+            hue=series_col,
+            style=series_col,
+            markers=False,
+            dashes=dashes,
+            palette=colors,
+            estimator="min",
+            errorbar=None,
+            ax=ax,
+            legend=False,
+            alpha=0.5,
+        )
+
     if hranges:
         for series_name, (min_val, max_val) in hranges.items():
             if pd.notna(min_val) and pd.notna(max_val):
                 region_color = colors.get(series_name, "gray")
+                dash_style = dashes.get(series_name, "-")
                 ax.axhspan(
                     ymin=min_val,
                     ymax=max_val,
@@ -572,6 +622,8 @@ def plot_metric(
                     edgecolor=None,
                     linewidth=0,
                 )
+                ax.axhline(y=min_val, color=region_color, linestyle=dash_style, linewidth=1.0, alpha=0.5)
+                ax.axhline(y=max_val, color=region_color, linestyle=dash_style, linewidth=1.0, alpha=0.5)
 
     if hlines:
         for series_name, y_val in hlines.items():
@@ -1356,6 +1408,8 @@ def plot_graph(
     show_depth: bool = False,
     show_gt: bool = False,
     render_nums: list[int] = [0],
+    plot_raw: bool = True,
+    shared_colors: bool = True,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -1455,9 +1509,11 @@ def plot_graph(
         "gt": {"marker": "s", "dashes": (4, 4), "hatch": "\\\\\\"},
         "combined": {"marker": "D", "dashes": (1, 1), "hatch": "xxx"},
     }
-
     pal = sns.color_palette("tab10", n_colors=len(unique_splits))
-    val_to_color = dict(zip(unique_splits, pal))
+    if shared_colors:
+        val_to_color = dict(zip(unique_splits, pal))
+    else:
+        val_to_color = dict(zip(unique_series, pal))
 
     color_map = {}
     marker_map = {}
@@ -1476,12 +1532,15 @@ def plot_graph(
         else:
             method = "vggt"
 
-        if valid_split_cols:
-            val_str = series.replace(f"{method} | ", "")
-            original_val = next((v for v in unique_splits if str(v) == val_str), None)
-            color_map[series] = val_to_color.get(original_val, "#333333")
+        if shared_colors:
+            if valid_split_cols:
+                val_str = series.replace(f"{method} | ", "")
+                original_val = next((v for v in unique_splits if str(v) == val_str), None)
+                color_map[series] = val_to_color.get(original_val, "#333333")
+            else:
+                color_map[series] = val_to_color.get(method, "#333333")
         else:
-            color_map[series] = val_to_color.get(method, "#333333")
+            color_map[series] = val_to_color.get(series, "#333333")
 
         marker_map[series] = style_config[method]["marker"]
         dash_map[series] = style_config[method]["dashes"]
@@ -1606,6 +1665,7 @@ def plot_graph(
             y_log_scale=config.get("ylog", False),
             hatches=hatch_map,
             single_legend=single_legend,
+            plot_raw=plot_raw,
         )
 
     if single_legend:
