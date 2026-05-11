@@ -125,6 +125,12 @@ regexes = [
         default="",
     ),
     Param(
+        name="pose_opt_module",
+        pattern=r"_pomod(mcmc)|_pomod(3rgs)|_pomod(sgld)",
+        cast=str,
+        default="",
+    ),
+    Param(
         name="eval_opt",
         pattern=r"_(evalopt)",
         cast=lambda x: "Eval Pose Opt" if x == "evalopt" else "",
@@ -1305,6 +1311,9 @@ def plot_cameras(df: pd.DataFrame, dest_base: Path, x_axis: str | None = None, v
                 poses=load_poses_from_json(pose_file),
             )
             series_list.append(series)
+
+    if len(series_list) < 3:
+        return
 
     largest_series = series_list[2]
     for series in series_list[2:]:
