@@ -1843,6 +1843,19 @@ def plot_graph(
         if camera_pdf_file.exists():
             shutil.copy2(camera_pdf_file, latest_camera_pdf)
             print("Latest copy saved:", Path(latest_camera_pdf))
+            tex_out_path = str(Path(latest_camera_pdf).with_suffix(".tex"))
+            latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
+            latex_label = (
+                f"fig:cameras_{experiment_name}_{dataset_name}"
+                if experiment_name
+                else f"fig:cameras_{prefix}_{dataset_name}"
+            )
+            save_figure_tex(
+                tex_out_path,
+                "Images/04-Results/Renders/" + Path(latest_camera_pdf).name,
+                caption=latex_caption,
+                label=latex_label,
+            )
 
         latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
         latex_label = f"fig:{experiment_name}_{dataset_name}" if experiment_name else f"fig:{prefix}_{dataset_name}"
@@ -1987,7 +2000,7 @@ def plot_table(
 
     for m in metric_keys:
         if m in df_table.columns and m in metrics:
-            rename_map[m] = f"{metrics[m]['title']} {metrics[m]['direction']}"
+            rename_map[m] = f"{metrics[m]['title']}"
 
     df_table = df_table.rename(columns=rename_map)
 
