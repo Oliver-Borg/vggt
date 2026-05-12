@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Tuple
+from line_profiler import profile
 import numpy as np
 import shutil
 import warnings
@@ -366,6 +367,8 @@ def load_metrics_to_df(
     for record in records_list:
         if record.get("real_num_points") is not None and record.get("num_points") is None:
             record["num_points"] = record["real_num_points"]
+        if record.get("real_num_points") is not None:
+            record["initial_points"] = record["real_num_points"]
 
     if not records_list:
         return pd.DataFrame()
@@ -1201,6 +1204,10 @@ def _process_single_render(
 
         label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
 
+        w, h = pred_img.size
+        image_width = 1200
+        image_height = int(image_width * h / w)
+        pred_img = pred_img.resize((image_width, image_height))
         pred_img = add_text_to_image(pred_img, label_text, 48)
         images.append(pred_img)
 
@@ -1232,6 +1239,7 @@ def _stack_images_with_wrap(images: list[Image.Image], max_cols: int = 3):
     return stacked_img
 
 
+@profile
 def create_render_figure(
     df,
     dest_base,
@@ -1327,6 +1335,7 @@ def create_render_figure(
             print("LaTeX figure saved:", Path(tex_out_path))
 
 
+@profile
 def plot_cameras(
     df: pd.DataFrame,
     dest_base: Path,
@@ -1395,6 +1404,7 @@ def plot_cameras(
     )
 
 
+@profile
 def plot_graph(
     name: str,
     prefix: str,
@@ -1423,6 +1433,7 @@ def plot_graph(
     render_nums: list[int] = [0],
     plot_raw: bool = True,
     shared_colors: bool = True,
+    make_camera_plot: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -1582,11 +1593,11 @@ def plot_graph(
         {"y": "lpips", "title": "LPIPS ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "ssim", "title": "SSIM ↑", "ylabel": "Score", "direction": "↑"},
         {"y": "quality", "title": "Composite Quality ↑", "ylabel": "Score", "direction": "↑"},
-        {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count", "direction": "↓"},
+        {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
-        {"y": "real_num_points", "title": "Initial Points ↑", "ylabel": "Count", "direction": "↑"},
+        {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
@@ -1818,7 +1829,8 @@ def plot_graph(
                 show_gt=show_gt,
                 render_nums=render_nums,
             )
-            plot_cameras(render_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
+            if make_camera_plot:
+                plot_cameras(render_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
 
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
@@ -1933,6 +1945,7 @@ def plot_table(
     dataset_name: str | None = None,
     experiment_name: str | None = None,
 ):
+    dynamic_rounding = False
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
     if df.empty:
@@ -1965,7 +1978,7 @@ def plot_table(
     # Keep only existing columns
     columns_to_include = [col for col in columns_to_include if col in df.columns]
 
-    non_metric_cols = [col for col in columns_to_include if col not in metric_keys]
+    non_metric_cols = [col for col in columns_to_include if col not in metric_keys or col in split_cols]
 
     # Take the mean of all metrics based on non_metric_cols
     df_for_agg = df[columns_to_include]
@@ -2010,12 +2023,12 @@ def plot_table(
 
     for m in metric_keys:
         if m in df_table.columns and m in metrics:
-            title = metrics[m]["title"]
+            metric_title = metrics[m]["title"]
             if m == "eval_rre":
-                title = title.replace("Validation Step", "Val")
+                metric_title = metric_title.replace("Validation Step", "Val")
             if m == "eval_rte":
-                title = title.replace("Validation Step", "Val")
-            rename_map[m] = title
+                metric_title = metric_title.replace("Validation Step", "Val")
+            rename_map[m] = metric_title
 
     df_table_renamed = df_table.rename(columns=rename_map)
     inv_rename_map = {v: k for k, v in rename_map.items()}
@@ -2043,7 +2056,7 @@ def plot_table(
                 direction = metric_info.get("direction")
 
                 if direction:
-                    sorted_vals = col.dropna().sort_values(ascending=(direction == "↓"))
+                    sorted_vals = col.dropna().sort_values(ascending=(direction == "↓")).round(3)
                     unique_sorted_vals = sorted_vals.unique()
                     if len(unique_sorted_vals) > 0:
                         best_val = unique_sorted_vals[0]
@@ -2054,10 +2067,10 @@ def plot_table(
                 def formatter(x):
                     if pd.isna(x):
                         return ""
-                    s = f"{x:d}" if is_int else f"{x:.3f}"
-                    if best is not None and np.isclose(x, best):
+                    s = f"{x:d}" if is_int else (f"{x:.3g}" if dynamic_rounding else f"{x:.3f}")
+                    if best is not None and np.isclose(round(x, 3), best):
                         return f"\\textbf{{{s}}}"
-                    if second_best is not None and np.isclose(x, second_best):
+                    if second_best is not None and np.isclose(round(x, 3), second_best):
                         return f"\\underline{{{s}}}"
                     return s
 
