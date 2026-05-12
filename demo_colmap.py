@@ -37,12 +37,11 @@ import pyceres
 from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images_square
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-from vggt.utils.geometry import unproject_depth_map_to_point_map
+from vggt.utils.geometry import project_world_points_to_cam, unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues, uniform_limit_trues
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
 from vggt.utils.image_utils import np_rgb
-
 
 # TODO: add support for masks
 # TODO: add iterative BA
@@ -241,6 +240,74 @@ def predict_tracks_with_cache(
     return pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb
 
 
+def filter_nearest(extrinsic: np.ndarray, intrinsic: np.ndarray, depth_map: np.ndarray, conf_mask: np.ndarray):
+    print(extrinsic.shape)
+    print(intrinsic.shape)
+    print(depth_map.shape)
+    print(conf_mask.shape)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+
+    num_cameras = extrinsic.shape[0]
+    height, width = depth_map.shape[1], depth_map.shape[2]
+
+    # Convert depth_map to tensor once for sampling
+    depth_map_t = torch.tensor(depth_map, dtype=torch.float32, device=device)
+
+    # Loop over each camera
+    for i in range(num_cameras):
+        # Extract indices of currently valid points to map them back later
+        valid_idx = np.where(conf_mask)
+        world_points = torch.tensor(points_3d[valid_idx], dtype=torch.float32, device=device)
+
+        if world_points.shape[0] == 0:
+            continue
+
+        image_points, cam_points = project_world_points_to_cam(
+            world_points,
+            torch.tensor(extrinsic[i: i + 1], dtype=torch.float32, device=device),
+            torch.tensor(intrinsic[i: i + 1], dtype=torch.float32, device=device),
+        )
+        assert image_points is not None
+
+        # Remove batch dimension: image_points is (N, 2), cam_points is (3, N)
+        image_points = image_points.squeeze(0)
+        cam_points = cam_points.squeeze(0)
+
+        # 2. Get a mask of valid image_points using image dimensions
+        u = image_points[:, 0].round().long()
+        v = image_points[:, 1].round().long()
+
+        valid_mask = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+
+        # 3. Calculate depths of all points within frame (Z-coordinate is index 2)
+        projected_depths = cam_points[2, :]
+
+        # 4. Sample depth map and find nearer points
+        nearer_mask = torch.zeros(world_points.shape[0], dtype=torch.bool, device=device)
+
+        u_valid = u[valid_mask]
+        v_valid = v[valid_mask]
+
+        # Sample the depth map at the valid projected pixel coordinates
+        sampled_depths = depth_map_t[i, v_valid, u_valid].view(-1)
+
+        # Ignore pixels where the depth map has no reading (e.g., depth == 0)
+        valid_depth_mask = sampled_depths > 1e-8
+
+        # Check if projected depth is nearer than the depth map (with a small margin to prevent self-occlusion)
+        nearer_mask[valid_mask] = (projected_depths[valid_mask] < (sampled_depths - 1e-3)) & valid_depth_mask
+
+        # Combine masks and update conf_mask in place using the mapped indices
+        # We invalidate points that are validly projected AND nearer
+        invalidated_points = (valid_mask & nearer_mask).cpu().numpy()
+        conf_mask[valid_idx] = conf_mask[valid_idx] & ~invalidated_points
+
+    return conf_mask
+
+
 @profile
 def run_vggt(
     scene_dir: str,
@@ -261,6 +328,7 @@ def run_vggt(
     cache_dir: str | None = None,
     save_conf_as_errors: bool = False,
     max_ba_iterations: int = 50,
+    near_filtering: bool = False,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -490,7 +558,6 @@ def run_vggt(
         if sampling_mode == "ba":
             points_3d = tracked_points_3d
 
-
     if sampling_mode != "ba":
         conf_thres_value = conf_thres_value
         max_points_for_colmap = num_points  # randomly sample 3D points
@@ -519,6 +586,10 @@ def run_vggt(
         conf_mask = (depth_conf >= conf_thres_value) & (~np.isnan(points_3d[..., 0]))
 
         assert conf_thres_value <= 0.0 or ((masks[..., 0] == 0) & conf_mask).sum() == 0
+
+        if near_filtering:
+            conf_mask = filter_nearest(extrinsic, intrinsic, depth_map, conf_mask)
+
         # at most writing 100000 3d points to colmap reconstruction object
         if sampling_mode == "random" or sampling_mode == "confidence":
             conf_mask = randomly_limit_trues(

@@ -162,6 +162,7 @@ def run_vggt_pipeline(
     shared_camera: bool = False,
     use_ba: bool = False,
     max_ba_iterations: int = 50,
+    near_filtering: bool = False,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
@@ -176,6 +177,7 @@ def run_vggt_pipeline(
         save_conf_as_errors=save_conf_as_errors,
         shared_camera=shared_camera,
         max_ba_iterations=max_ba_iterations,
+        near_filtering=near_filtering,
     )
 
 
@@ -486,6 +488,7 @@ def run_reconstruction(
             shared_camera=args.shared_camera,
             use_ba=args.use_ba,
             max_ba_iterations=args.max_ba_iterations,
+            near_filtering=args.near_filtering,
         )
     else:
         raise ValueError("Invalid choice")
