@@ -86,6 +86,7 @@ def uniform_limit_trues(
     iters = 0
     best_grid_size = grid_size
     closest_count: int | None = None
+    best_min_grid_occupancy = min_grid_occupancy
 
     # Ideally we will have a value of grid_size that gives us ~100000 occupied voxels
     while iters < 10 and lower_grid_size < upper_grid_size:
@@ -105,6 +106,7 @@ def uniform_limit_trues(
             if closest_count is None or cur_size > closest_count:
                 closest_count = cur_size
                 best_grid_size = grid_size
+                best_min_grid_occupancy = min_grid_occupancy
         else:
             upper_grid_size = grid_size
             grid_size = (lower_grid_size + upper_grid_size) // 2
@@ -124,8 +126,15 @@ def uniform_limit_trues(
     flat_inds_sorted = flat_voxel_inds[inds_sorter]
     last_indices = np.where(
         (flat_inds_sorted[:-1] != flat_inds_sorted[1:])
-        & (flat_inds_sorted[:-1] == np.roll(flat_inds_sorted, shift=(min_grid_occupancy,))[:-1])
+        & (flat_inds_sorted[:-1] == np.roll(flat_inds_sorted, shift=(best_min_grid_occupancy,))[:-1])
     )[0]
+    if len(last_indices) == 0:
+        last_indices = np.where(
+            (flat_inds_sorted[:-1] != flat_inds_sorted[1:])
+            & (flat_inds_sorted[:-1] == np.roll(flat_inds_sorted, shift=(1,))[:-1])
+        )[0]
+        if len(last_indices) > max_trues:
+            last_indices = last_indices[:max_trues]
 
     set_mask = np.zeros_like(limited_flat_mask)
     set_mask[last_indices] = True
