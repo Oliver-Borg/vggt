@@ -1,6 +1,7 @@
 import argparse
 from collections import defaultdict
 from dataclasses import dataclass
+from line_profiler import profile
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as lines
@@ -66,6 +67,7 @@ def _calculate_all_errors(
     return all_errors, global_max_rte
 
 
+@profile
 def plot_cameras(
     poses: dict[str, np.ndarray],
     colors: dict[str, tuple[float, float, float, float] | tuple[float, float, float] | None],
@@ -232,12 +234,13 @@ def plot_cameras(
     return ax
 
 
+@profile
 def plot_extrinsics(
     gt_series: CameraSeries,
     series_list: list[CameraSeries],
     output_path: Path,
     image_names: list[str] | None = None,
-    max_cols: int = 4,
+    max_cols: int = 3,
     use_error_colors: bool = False,
 ):
     num_series = len(series_list)
