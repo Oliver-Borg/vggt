@@ -596,7 +596,6 @@ if __name__ == "__main__":
 
         for config_dict in tqdm.tqdm(configs):
             run_args = ReconstructArgs(**config_dict)
-            run_reconstruction(run_args)
             try:
                 run_reconstruction(run_args)
             except Exception as e:
