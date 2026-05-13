@@ -218,7 +218,7 @@ def save_timing(
         json.dump(stat, f, indent=4)
 
 
-def _select_indices(coords: np.ndarray, num_images: int, seed: int):
+def _select_indices(coords: np.ndarray, num_images: int, seed: int, farthest: bool = True):
     # Mean Farthest Point Sampling
     # TODO Try out normal Farthest Point Sampling
     # TODO Actually parse GT poses and use the real coordinates
@@ -237,19 +237,22 @@ def _select_indices(coords: np.ndarray, num_images: int, seed: int):
         assert mean_dists.shape[0] == remaining_coords.shape[0]
 
         remaining_indices = all_indices[~selected_mask]
-        next_index = int(remaining_indices[mean_dists.argmax()])
+        if farthest:
+            next_index = int(remaining_indices[mean_dists.argmax()])
+        else:
+            next_index = int(remaining_indices[mean_dists.argmin()])
 
         selected_indices.append(next_index)
 
     return np.array(selected_indices)
 
 
-def select_indices(indices: np.ndarray, num_images: int, seed: int):
+def select_indices(indices: np.ndarray, num_images: int, seed: int, farthest: bool = True):
     angles = indices / (indices.max() - 1) * 2 * np.pi  # This assumes points are distributed in a circle
     xs = np.cos(angles)
     ys = np.sin(angles)
     coords = np.stack([xs, ys], axis=1)  # n, 2
-    return indices[_select_indices(coords, num_images, seed)]
+    return indices[_select_indices(coords, num_images, seed, farthest)]
 
 
 assert set(select_indices(np.arange(296), 30, 42)).issubset(select_indices(np.arange(296), 40, 42))
@@ -294,12 +297,15 @@ def get_image_list(
         for i in selected_indices:
             image_subset.append(all_images[i])
         all_images = image_subset
-    elif image_mode == "farthestpose":
+    elif image_mode == "farthestpose" or image_mode == "nearestpose":
         assert pcd is not None
         poses = get_poses(pcd)
         coords = np.array([poses[name][:3, 3] for name in all_images])
-        assert set(_select_indices(coords, num_images // 2, seed)).issubset(_select_indices(coords, num_images, seed))
-        selected_indices = indices[_select_indices(coords, num_images, seed)]
+        farthest = image_mode == "farthestpose"
+        assert set(_select_indices(coords, num_images // 2, seed, farthest)).issubset(
+            _select_indices(coords, num_images, seed, farthest)
+        )
+        selected_indices = indices[_select_indices(coords, num_images, seed, farthest)]
         image_subset = []
         for i in selected_indices:
             image_subset.append(all_images[i])
@@ -411,7 +417,7 @@ def run_reconstruction(
 
     pcd = None
 
-    if args.image_mode == "farthestpose":
+    if args.image_mode == "farthestpose" or args.image_mode == "nearestpose":
         if "nerf_synthetic" in Path(input_path).parts:
             pcd = load_cameras(Path(input_path).parent / "transforms_train.json")
         else:

@@ -106,7 +106,12 @@ regexes = [
         cast=lambda x: "Rec Pose Opt" if x == "recposeopt" else "",
         default="",
     ),
-    Param(name="image_mode", pattern=r"_(shuffle)|_(distributed)|_(mfps)|_(farthestpose)", cast=str, default=""),
+    Param(
+        name="image_mode",
+        pattern=r"_(shuffle)|_(distributed)|_(mfps)|_(farthestpose)|_(nearestpose)",
+        cast=str,
+        default="",
+    ),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default=""),
     Param(
@@ -1355,6 +1360,7 @@ def plot_cameras(
     series_list: list[CameraSeries] = []
     df = df.copy()
     cmap = plt.get_cmap("tab10")
+    image_names = []
     for i, (idx, row) in enumerate(df.iterrows()):
         file_path = row.get("sfm_file_path", "")
         if not file_path or pd.isna(file_path):
@@ -1398,10 +1404,11 @@ def plot_cameras(
 
     largest_series = series_list[2]
     for series in series_list[2:]:
+        image_names.extend(series.poses.keys())
         if len(series.poses) > len(largest_series.poses):
             largest_series = series
 
-    image_names = list(largest_series.poses.keys())
+    image_names = list(set(image_names))
 
     plot_extrinsics(
         series_list[0],
@@ -1421,6 +1428,7 @@ def plot_graph(
     filter: str | None = None,
     folders: list[tuple[str, str]] | None = None,
     render_folders: list[str] | None = None,
+    camera_folders: list[str] | None = None,
     create_pcp: bool = False,
     create_combinations: bool = False,
     val_steps: list[int] = [7000],
@@ -1837,10 +1845,10 @@ def plot_graph(
                 show_gt=show_gt,
                 render_nums=render_nums,
             )
-            if make_camera_plot:
-                plot_cameras(render_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
-    elif make_camera_plot:
-        plot_cameras(df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
+    if camera_folders is not None and make_camera_plot:
+        camera_df = df[df["input_folder"].isin(camera_folders)]
+        if not camera_df.empty:
+            plot_cameras(camera_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
 
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"

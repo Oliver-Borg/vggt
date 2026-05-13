@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 import os
 
-IMAGE_MODE = Literal["shuffle", "distributed", "mfps", "farthestpose"]
+IMAGE_MODE = Literal["shuffle", "distributed", "mfps", "farthestpose", "nearestpose"]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
