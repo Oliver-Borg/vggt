@@ -16,6 +16,7 @@ import copy
 import torch
 import torch.nn.functional as F
 
+from cam_opt import optimize_poses
 from combine_clouds import save_cameras_json
 from reconstruct_args import SAMPLING_MODE
 from vggt.dependency.pycolmap_to_np import extract_poses_from_reconstruction
@@ -69,6 +70,9 @@ def parse_args():
     )
     parser.add_argument(
         "--conf_thres_value", type=float, default=5.0, help="Confidence threshold value for depth filtering (wo BA)"
+    )
+    parser.add_argument(
+        "--reconstruct_pose_opt", action="store_true", default=False, help="Use pose optimization during reconstruction"
     )
     return parser.parse_args()
 
@@ -132,6 +136,7 @@ def demo_fn(args):
         max_query_pts=args.max_query_pts,
         fine_tracking=args.fine_tracking,
         conf_thres_value=args.conf_thres_value,
+        reconstruct_pose_opt=args.reconstruct_pose_opt,
     )
 
 
@@ -338,6 +343,7 @@ def run_vggt(
     max_ba_iterations: int = 50,
     near_filtering_strength: float = 0.0,
     near_filtering_quorum: int = 2,
+    reconstruct_pose_opt: bool = False,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -364,6 +370,7 @@ def run_vggt(
             "max_ba_iterations": max_ba_iterations,
             "near_filtering_strength": near_filtering_strength,
             "near_filtering_quorum": near_filtering_quorum,
+            "reconstruct_pose_opt": reconstruct_pose_opt,
         },
     )
 
@@ -486,6 +493,15 @@ def run_vggt(
             )
 
     processing_t1 = time.time()
+
+    if reconstruct_pose_opt:
+        extrinsic = optimize_poses(
+            extrinsic,
+            intrinsic,
+            depth_map,
+            depth_conf,
+            images.cpu().numpy(),
+        )
 
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
     points_3d[masks[..., 0] == 0] = np.nan

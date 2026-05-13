@@ -32,6 +32,7 @@ class ReconstructArgs:
     max_ba_iterations: int = 50
     near_filtering_strength: float = 0.0
     near_filtering_quorum: int = 1
+    reconstruct_pose_opt: bool = False
 
     def __post_init__(self):
         self.name = self.name.strip("/")
@@ -87,6 +88,9 @@ class ReconstructArgs:
             if self.near_filtering_strength > 0.0:
                 parts.append(f"nf{self.near_filtering_strength}")
                 parts.append(f"nq{self.near_filtering_quorum}")
+
+            if self.reconstruct_pose_opt:
+                parts.append("recposeopt")
 
             if self.save_conf_as_errors:
                 parts.append("errconf")

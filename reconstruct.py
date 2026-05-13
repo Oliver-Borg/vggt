@@ -164,6 +164,7 @@ def run_vggt_pipeline(
     max_ba_iterations: int = 50,
     near_filtering_strength: float = 0.0,
     near_filtering_quorum: int = 1,
+    reconstruct_pose_opt: bool = False,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
@@ -180,6 +181,7 @@ def run_vggt_pipeline(
         max_ba_iterations=max_ba_iterations,
         near_filtering_strength=near_filtering_strength,
         near_filtering_quorum=near_filtering_quorum,
+        reconstruct_pose_opt=reconstruct_pose_opt,
     )
 
 
@@ -492,6 +494,7 @@ def run_reconstruction(
             max_ba_iterations=args.max_ba_iterations,
             near_filtering_strength=args.near_filtering_strength,
             near_filtering_quorum=args.near_filtering_quorum,
+            reconstruct_pose_opt=args.reconstruct_pose_opt,
         )
     else:
         raise ValueError("Invalid choice")
@@ -602,8 +605,9 @@ if __name__ == "__main__":
 
         for config_dict in tqdm.tqdm(configs):
             run_args = ReconstructArgs(**config_dict)
-            try:
-                run_reconstruction(run_args)
-            except Exception as e:
-                print(e)
-                continue
+            run_reconstruction(run_args)
+            # try:
+            #     run_reconstruction(run_args)
+            # except Exception as e:
+            #     print(e)
+            #     continue

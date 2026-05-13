@@ -100,6 +100,12 @@ regexes = [
     Param(name="sampling_mode", pattern=r"_(ba)|_(voxels)|_(confidence)|_(random)|_(vox3)", cast=str),
     Param(name="near_filtering_strength", pattern=r"_nf(\d+\.\d+|\d+)", cast=str),
     Param(name="near_filtering_quorum", pattern=r"_nq(\d+)", cast=int),
+    Param(
+        name="reconstruct_pose_opt",
+        pattern=r"_(recposeopt)",
+        cast=lambda x: "Rec Pose Opt" if x == "recposeopt" else "",
+        default="",
+    ),
     Param(name="image_mode", pattern=r"_(shuffle)|_(distributed)|_(mfps)|_(farthestpose)", cast=str, default=""),
     Param(name="num_cameras", pattern=r"_i(\d+)", cast=int),
     Param(name="gt_eval", pattern=r"_(gteval)", cast=lambda x: "GT Eval" if x == "gteval" else "", default=""),
@@ -1833,6 +1839,8 @@ def plot_graph(
             )
             if make_camera_plot:
                 plot_cameras(render_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
+    elif make_camera_plot:
+        plot_cameras(df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
 
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
