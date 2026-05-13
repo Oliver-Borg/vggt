@@ -250,6 +250,15 @@ def optimize_poses(
         # Average the accumulated loss
         loss = total_loss / valid_pairs_counted
 
+        # Penalize how far the cameras have drifted from their initialization
+        anchor_loss_t = delta_t.norm(dim=-1).mean()
+        anchor_loss_r = delta_r.norm(dim=-1).mean()
+
+        lambda_t = 0.5  # Weight for translation drift
+        lambda_r = 0.1  # Weight for rotation drift (usually needs less strict anchoring)
+
+        anchor_loss = (lambda_t * anchor_loss_t) + (lambda_r * anchor_loss_r)
+
         # 2. Optional Trajectory Smoothness Regularization
         # Penalizes large sudden jumps in translation between consecutive frames
         translations = current_ext[:, :3, 3]
@@ -258,7 +267,7 @@ def optimize_poses(
         smoothness_loss = acceleration.norm(dim=-1).mean()
 
         # Add a small weight (e.g., 0.1) to the smoothness prior
-        final_loss = loss + (0.0 * smoothness_loss)
+        final_loss = loss + anchor_loss + (0.0 * smoothness_loss)
 
         final_loss.backward()
 
