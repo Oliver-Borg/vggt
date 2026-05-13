@@ -30,7 +30,8 @@ class ReconstructArgs:
     shared_camera: bool = False
     use_ba: bool = False
     max_ba_iterations: int = 50
-    near_filtering: bool = False
+    near_filtering_strength: float = 0.0
+    near_filtering_quorum: int = 1
 
     def __post_init__(self):
         self.name = self.name.strip("/")
@@ -83,8 +84,9 @@ class ReconstructArgs:
                     ]
                 )
             parts.append(self.sampling_mode)
-            if self.near_filtering:
-                parts.append("nearfilter")
+            if self.near_filtering_strength > 0.0:
+                parts.append(f"nf{self.near_filtering_strength}")
+                parts.append(f"nq{self.near_filtering_quorum}")
 
             if self.save_conf_as_errors:
                 parts.append("errconf")

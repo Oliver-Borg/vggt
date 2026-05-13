@@ -240,21 +240,27 @@ def predict_tracks_with_cache(
     return pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb
 
 
-def filter_nearest(extrinsic: np.ndarray, intrinsic: np.ndarray, depth_map: np.ndarray, conf_mask: np.ndarray):
-    print(extrinsic.shape)
-    print(intrinsic.shape)
-    print(depth_map.shape)
-    print(conf_mask.shape)
-
+def filter_nearest(
+    extrinsic: np.ndarray,
+    intrinsic: np.ndarray,
+    depth_map: np.ndarray,
+    conf_mask: np.ndarray,
+    strength: float,
+    quorum: int,
+):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
 
     num_cameras = extrinsic.shape[0]
     height, width = depth_map.shape[1], depth_map.shape[2]
+    threshold = quorum
 
     # Convert depth_map to tensor once for sampling
     depth_map_t = torch.tensor(depth_map, dtype=torch.float32, device=device)
+
+    # Initialize a counter for how many times each point is invalidated
+    invalid_counts = np.zeros_like(conf_mask, dtype=np.int32)
 
     # Loop over each camera
     for i in range(num_cameras):
@@ -263,7 +269,7 @@ def filter_nearest(extrinsic: np.ndarray, intrinsic: np.ndarray, depth_map: np.n
         world_points = torch.tensor(points_3d[valid_idx], dtype=torch.float32, device=device)
 
         if world_points.shape[0] == 0:
-            continue
+            break
 
         image_points, cam_points = project_world_points_to_cam(
             world_points,
@@ -298,12 +304,14 @@ def filter_nearest(extrinsic: np.ndarray, intrinsic: np.ndarray, depth_map: np.n
         valid_depth_mask = sampled_depths > 1e-8
 
         # Check if projected depth is nearer than the depth map (with a small margin to prevent self-occlusion)
-        nearer_mask[valid_mask] = (projected_depths[valid_mask] < (sampled_depths - 1e-3)) & valid_depth_mask
+        nearer_mask[valid_mask] = (projected_depths[valid_mask] < (sampled_depths - 1e-3) * strength) & valid_depth_mask
+        print(nearer_mask.sum().item(), invalid_counts.max())
 
-        # Combine masks and update conf_mask in place using the mapped indices
-        # We invalidate points that are validly projected AND nearer
+        # Combine masks and update invalid counts using the mapped indices
+        # We count points that are validly projected AND nearer
         invalidated_points = (valid_mask & nearer_mask).cpu().numpy()
-        conf_mask[valid_idx] = conf_mask[valid_idx] & ~invalidated_points
+        invalid_counts[valid_idx] += invalidated_points
+        conf_mask[valid_idx] = invalid_counts[valid_idx] < threshold
 
     return conf_mask
 
@@ -328,7 +336,8 @@ def run_vggt(
     cache_dir: str | None = None,
     save_conf_as_errors: bool = False,
     max_ba_iterations: int = 50,
-    near_filtering: bool = False,
+    near_filtering_strength: float = 0.0,
+    near_filtering_quorum: int = 2,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -346,6 +355,15 @@ def run_vggt(
             "max_query_pts": max_query_pts,
             "fine_tracking": fine_tracking,
             "conf_thres_value": conf_thres_value,
+            "num_profiling_runs": num_profiling_runs,
+            "sampling_mode": sampling_mode,
+            "num_points": num_points,
+            "model": model,
+            "cache_dir": cache_dir,
+            "save_conf_as_errors": save_conf_as_errors,
+            "max_ba_iterations": max_ba_iterations,
+            "near_filtering_strength": near_filtering_strength,
+            "near_filtering_quorum": near_filtering_quorum,
         },
     )
 
@@ -587,8 +605,10 @@ def run_vggt(
 
         assert conf_thres_value <= 0.0 or ((masks[..., 0] == 0) & conf_mask).sum() == 0
 
-        if near_filtering:
-            conf_mask = filter_nearest(extrinsic, intrinsic, depth_map, conf_mask)
+        if near_filtering_strength > 0.0:
+            conf_mask = filter_nearest(
+                extrinsic, intrinsic, depth_map, conf_mask, near_filtering_strength, near_filtering_quorum
+            )
 
         # at most writing 100000 3d points to colmap reconstruction object
         if sampling_mode == "random" or sampling_mode == "confidence":
