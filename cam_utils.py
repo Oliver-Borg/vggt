@@ -110,7 +110,7 @@ def umeyama_alignment_two_points(
 
 
 def umeyama_alignment(
-    from_points: np.ndarray, to_points: np.ndarray, with_scale: bool = True
+    from_points: np.ndarray, to_points: np.ndarray, with_scale: bool = True, ignore_outliers: bool = False
 ) -> tuple[float, np.ndarray, np.ndarray]:
     """
     Computes optimal similarity transform: p = s * R * q + t.
@@ -146,7 +146,50 @@ def umeyama_alignment(
         scale = 1.0
 
     translation = p_mean - scale * np.dot(rotation, q_mean)
+
+    if not ignore_outliers:
+        return float(scale), rotation, translation
+
+    # Outlier rejection
+    aligned_q = scale * np.dot(q, rotation.T) + translation
+    distances = np.linalg.norm(aligned_q - p, axis=1)
+    # Median Absolute Deviation for outlier detection
+    median_dist = np.median(distances)
+    mad = np.median(np.abs(distances - median_dist))
+    # Keep points within 3 MADs.
+    threshold = median_dist + 3 * (mad + 1e-6)
+    inliers = distances < threshold
+    if not np.all(inliers) and np.sum(inliers) >= 3:
+        return umeyama_alignment(q[inliers], p[inliers], with_scale, ignore_outliers=False)
+
     return float(scale), rotation, translation
+
+
+def umeyama_alignment_with_orientation(
+    from_points: np.ndarray,
+    to_points: np.ndarray,
+    from_rotations: np.ndarray,
+    to_rotations: np.ndarray,
+    alpha: float = 1.0,
+    with_scale: bool = True,
+    ignore_outliers: bool = False,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """
+    Compute umeyama alignment while respecting orientations.
+    We pass points along the camera orientation axis to force the solver to account for these.
+    """
+    from_x_axis_points = from_points + alpha * from_rotations[:, :, 0]
+    from_y_axis_points = from_points + alpha * from_rotations[:, :, 1]
+    from_z_axis_points = from_points + alpha * from_rotations[:, :, 2]
+
+    to_x_axis_points = to_points + alpha * to_rotations[:, :, 0]
+    to_y_axis_points = to_points + alpha * to_rotations[:, :, 1]
+    to_z_axis_points = to_points + alpha * to_rotations[:, :, 2]
+
+    all_from_points = np.concatenate([from_points, from_x_axis_points, from_y_axis_points, from_z_axis_points], axis=0)
+    all_to_points = np.concatenate([to_points, to_x_axis_points, to_y_axis_points, to_z_axis_points], axis=0)
+
+    return umeyama_alignment(all_from_points, all_to_points, with_scale, ignore_outliers)
 
 
 def get_metrics(

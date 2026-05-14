@@ -18,7 +18,7 @@ import torch.nn.functional as F
 import tqdm
 
 from cam_opt import optimize_poses
-from cam_utils import c2w_to_w2c, umeyama_alignment, w2c_to_c2w
+from cam_utils import c2w_to_w2c, umeyama_alignment_with_orientation, w2c_to_c2w
 from combine_clouds import save_cameras_json
 from reconstruct_args import SAMPLING_MODE
 from vggt.dependency.pycolmap_to_np import extract_poses_from_reconstruction
@@ -33,6 +33,7 @@ from pathlib import Path
 import trimesh
 import pycolmap
 import matplotlib.pyplot as plt
+from scipy.spatial.distance import cdist
 
 import pyceres
 
@@ -544,7 +545,13 @@ def run_vggt(
                 # Transpose Rs (N, 3, 3) -> (N, 3, 3) and multiply by ts (N, 3, 1)
                 return -(Rs.transpose(0, 2, 1) @ ts).squeeze(-1)
 
+            def get_camera_rotations(w2c_mats):
+                Rs = w2c_mats[:, :3, :3]
+                # Transpose Rs (N, 3, 3) -> (N, 3, 3) to get Camera-to-World rotations
+                return Rs.transpose(0, 2, 1)
+
             translations = get_camera_centers(extrinsic)
+            rotations = get_camera_rotations(extrinsic)
 
             cam_from_world = pycolmap.Rigid3d(
                 pycolmap.Rotation3d(extrinsic[random_index][:3, :3]), extrinsic[random_index][:3, 3]
@@ -560,8 +567,22 @@ def run_vggt(
             # 4. Find optimal alignment transformation between these poses and the full extrinsic
             from_points = get_camera_centers(mini_extrinsic)
             to_points = translations[nearest_indices]
+            from_rotations = get_camera_rotations(mini_extrinsic)
+            to_rotations = rotations[nearest_indices]
 
-            s, R, t = umeyama_alignment(from_points, to_points)
+            distances_global_cameras = cdist(to_points, to_points, metric="euclidean")
+
+            valid_distances = distances_global_cameras[np.triu_indices(distances_global_cameras.shape[0], k=1)]
+            alpha = float(np.mean(valid_distances)) * 0.0
+
+            s, R, t = umeyama_alignment_with_orientation(
+                from_points,
+                to_points,
+                from_rotations,
+                to_rotations,
+                alpha=alpha,
+                ignore_outliers=True,
+            )
 
             aligned_mini_extrinsic = mini_extrinsic.copy()
             for i in range(mini_extrinsic.shape[0]):
