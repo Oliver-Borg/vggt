@@ -33,6 +33,8 @@ class ReconstructArgs:
     near_filtering_strength: float = 0.0
     near_filtering_quorum: int = 1
     reconstruct_pose_opt: bool = False
+    optimisation_iterations: int = 0
+    optimisation_neighbourhood: int = 10
 
     def __post_init__(self):
         self.name = self.name.strip("/")
@@ -91,6 +93,10 @@ class ReconstructArgs:
 
             if self.reconstruct_pose_opt:
                 parts.append("recposeopt")
+
+            if self.optimisation_iterations > 0:
+                parts.append(f"opti{self.optimisation_iterations}")
+                parts.append(f"optn{self.optimisation_neighbourhood}")
 
             if self.save_conf_as_errors:
                 parts.append("errconf")

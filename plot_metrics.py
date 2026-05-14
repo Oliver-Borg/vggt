@@ -106,6 +106,8 @@ regexes = [
         cast=lambda x: "Rec Pose Opt" if x == "recposeopt" else "",
         default="",
     ),
+    Param(name="optimisation_iterations", pattern=r"_opti(\d+)", cast=int, default=0),
+    Param(name="optimisation_neighbourhood", pattern=r"_optn(\d+)", cast=int, default=10),
     Param(
         name="image_mode",
         pattern=r"_(shuffle)|_(distributed)|_(mfps)|_(farthestpose)|_(nearestpose)",

@@ -165,6 +165,8 @@ def run_vggt_pipeline(
     near_filtering_strength: float = 0.0,
     near_filtering_quorum: int = 1,
     reconstruct_pose_opt: bool = False,
+    optimisation_iterations: int = 0,
+    optimisation_neighbourhood: int = 10,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
@@ -182,6 +184,8 @@ def run_vggt_pipeline(
         near_filtering_strength=near_filtering_strength,
         near_filtering_quorum=near_filtering_quorum,
         reconstruct_pose_opt=reconstruct_pose_opt,
+        optimisation_iterations=optimisation_iterations,
+        optimisation_neighbourhood=optimisation_neighbourhood,
     )
 
 
@@ -501,6 +505,8 @@ def run_reconstruction(
             near_filtering_strength=args.near_filtering_strength,
             near_filtering_quorum=args.near_filtering_quorum,
             reconstruct_pose_opt=args.reconstruct_pose_opt,
+            optimisation_iterations=args.optimisation_iterations,
+            optimisation_neighbourhood=args.optimisation_neighbourhood,
         )
     else:
         raise ValueError("Invalid choice")
@@ -592,6 +598,9 @@ if __name__ == "__main__":
     single_parser.add_argument("--save_conf_as_errors", action="store_true", help="Save depth confidence map as errors")
     single_parser.add_argument("--shared_camera", action="store_true", help="Share cameras between images")
     single_parser.add_argument("--max_ba_iterations", type=int, default=50, help="Max BA iterations")
+    single_parser.add_argument("--reconstruct_pose_opt", action="store_true", help="Use pose optimization during reconstruction")
+    single_parser.add_argument("--optimisation_iterations", type=int, default=0, help="Number of optimisation iterations")
+    single_parser.add_argument("--optimisation_neighbourhood", type=int, default=10, help="Size of neighbourhood for optimisation")
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(

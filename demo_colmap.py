@@ -15,8 +15,10 @@ import os
 import copy
 import torch
 import torch.nn.functional as F
+import tqdm
 
 from cam_opt import optimize_poses
+from cam_utils import c2w_to_w2c, umeyama_alignment, w2c_to_c2w
 from combine_clouds import save_cameras_json
 from reconstruct_args import SAMPLING_MODE
 from vggt.dependency.pycolmap_to_np import extract_poses_from_reconstruction
@@ -74,6 +76,12 @@ def parse_args():
     parser.add_argument(
         "--reconstruct_pose_opt", action="store_true", default=False, help="Use pose optimization during reconstruction"
     )
+    parser.add_argument(
+        "--optimisation_iterations", type=int, default=0, help="Number of optimisation iterations"
+    )
+    parser.add_argument(
+        "--optimisation_neighbourhood", type=int, default=10, help="Size of neighbourhood for optimisation"
+    )
     return parser.parse_args()
 
 
@@ -93,7 +101,7 @@ def run_VGGT(model: VGGT, images, dtype, resolution=518):
 
         # Predict Cameras
         pose_enc = model.camera_head(aggregated_tokens_list)[-1]
-        # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
+        # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world/w2c)
         extrinsic, intrinsic = pose_encoding_to_extri_intri(pose_enc, images.shape[-2:])
         # Predict Depth Maps
         depth_map, depth_conf = model.depth_head(aggregated_tokens_list, images, ps_idx)
@@ -137,6 +145,8 @@ def demo_fn(args):
         fine_tracking=args.fine_tracking,
         conf_thres_value=args.conf_thres_value,
         reconstruct_pose_opt=args.reconstruct_pose_opt,
+        optimisation_iterations=args.optimisation_iterations,
+        optimisation_neighbourhood=args.optimisation_neighbourhood,
     )
 
 
@@ -321,6 +331,25 @@ def filter_nearest(
     return conf_mask
 
 
+def knn(positions: np.ndarray, i: int, k: int) -> np.ndarray:
+    """
+    Get the indices of the k nearest neighbours of the ith position including itself.
+
+    Args:
+        positions: Positions of shape (N, 3).
+        i: Index of the position to get the nearest neighbours of.
+        k: Number of nearest neighbours to get
+
+    Returns:
+        np.ndarray: The indices of the k nearest neighbours of the ith position.
+    """
+
+    pos = positions[i]
+    distances = np.linalg.norm(positions - pos, axis=1)
+    sorted_indices = np.argsort(distances)
+    return sorted_indices[:k]
+
+
 @profile
 def run_vggt(
     scene_dir: str,
@@ -344,6 +373,8 @@ def run_vggt(
     near_filtering_strength: float = 0.0,
     near_filtering_quorum: int = 2,
     reconstruct_pose_opt: bool = False,
+    optimisation_iterations: int = 0,
+    optimisation_neighbourhood: int = 10,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -371,6 +402,8 @@ def run_vggt(
             "near_filtering_strength": near_filtering_strength,
             "near_filtering_quorum": near_filtering_quorum,
             "reconstruct_pose_opt": reconstruct_pose_opt,
+            "optimisation_iterations": optimisation_iterations,
+            "optimisation_neighbourhood": optimisation_neighbourhood,
         },
     )
 
@@ -491,6 +524,56 @@ def run_vggt(
                 },
                 cache_file,
             )
+
+    model_load_t1 = time.time()
+    if model is None:
+        model = load_model()
+    model_load_t2 = time.time()
+    model_alloc, model_res = model_vram_mb = get_gpu_stats()
+    print(
+        f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB"
+    )
+    if optimisation_iterations > 0:
+        for _ in tqdm.tqdm(range(optimisation_iterations)):
+            # 1. Sample a random point
+            random_index = np.random.randint(extrinsic.shape[0])
+
+            def get_camera_centers(w2c_mats):
+                Rs = w2c_mats[:, :3, :3]
+                ts = w2c_mats[:, :3, 3:4]
+                # Transpose Rs (N, 3, 3) -> (N, 3, 3) and multiply by ts (N, 3, 1)
+                return -(Rs.transpose(0, 2, 1) @ ts).squeeze(-1)
+
+            translations = get_camera_centers(extrinsic)
+
+            cam_from_world = pycolmap.Rigid3d(
+                pycolmap.Rotation3d(extrinsic[random_index][:3, :3]), extrinsic[random_index][:3, 3]
+            )  # Rot and Trans
+            assert np.allclose(cam_from_world.inverse().translation, translations[random_index])
+            # 2. Find the nearest neighbours
+            # (technically this should also check that they are facing in a similar direction)
+            nearest_indices = knn(translations, random_index, optimisation_neighbourhood)
+            # 3. Run VGGT on these images to predict a more accurate, smaller set of cameras
+            mini_extrinsic, mini_intrinsic, mini_depth_map, mini_depth_conf = run_VGGT(
+                model, images[nearest_indices], dtype, vggt_fixed_resolution
+            )
+            # 4. Find optimal alignment transformation between these poses and the full extrinsic
+            from_points = get_camera_centers(mini_extrinsic)
+            to_points = translations[nearest_indices]
+
+            s, R, t = umeyama_alignment(from_points, to_points)
+
+            aligned_mini_extrinsic = mini_extrinsic.copy()
+            for i in range(mini_extrinsic.shape[0]):
+                c2w_t, c2w_R = w2c_to_c2w(mini_extrinsic[i, :3, 3], mini_extrinsic[i, :3, :3])
+                c2w_t = s * R @ c2w_t + t
+                c2w_R = R @ c2w_R
+                w2c_t, w2c_R = c2w_to_w2c(c2w_t, c2w_R)
+                aligned_mini_extrinsic[i, :3, 3] = w2c_t
+                aligned_mini_extrinsic[i, :3, :3] = w2c_R
+
+            # 5. Update the global extrinsics to the more accurate local extrinsics
+            extrinsic[nearest_indices] = aligned_mini_extrinsic
 
     processing_t1 = time.time()
 
