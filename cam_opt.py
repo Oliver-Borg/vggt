@@ -4,7 +4,162 @@ import torch.nn.functional as F
 import numpy as np
 import random
 
-from vggt.utils.geometry import project_world_points_to_cam
+from vggt.utils.geometry import project_world_points_to_cam, unproject_depth_map_to_point_map
+
+
+def detect_outlier_cameras(
+    extrinsics: np.ndarray,
+    intrinsics: np.ndarray,
+    depth_maps: np.ndarray,
+    images: np.ndarray,
+    depth_conf: np.ndarray | None = None,
+    k: int = 5,
+    photo_weight: float = 1.0,
+    depth_weight: float = 0.1,
+    num_outliers: int = 1,
+) -> list[int]:
+    """
+    Detects outlier cameras by reprojecting points from the nearest k cameras,
+    performing depth sorting to render depth and color, and computing errors.
+
+    Args:
+        extrinsics: Camera extrinsics of shape (B, 3, 4).
+        intrinsics: Camera intrinsics of shape (B, 3, 3).
+        depth_maps: Depth maps of shape (B, H, W) or (B, H, W, 1).
+        images: RGB images of shape (B, H, W, 3) or (B, 3, H, W).
+        depth_conf: Optional depth confidence maps of shape (B, H, W).
+        k: Number of nearest neighbor cameras to use for reprojection.
+        photo_weight: Weight of the photometric L1 loss.
+        depth_weight: Weight of the depth L1 loss.
+        num_outliers: Number of outlier camera indices to return.
+
+    Returns:
+        list[int]: Indices of the top `num_outliers` cameras with the largest errors.
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    B = extrinsics.shape[0]
+    if depth_maps.ndim == 4:
+        depth_maps = depth_maps.squeeze(-1)
+    H, W = depth_maps.shape[1], depth_maps.shape[2]
+
+    # Normalize images to [0, 1] if they are uint8
+    if images.dtype == np.uint8:
+        images = images.astype(np.float32) / 255.0
+    # Permute to channel-last (B, H, W, 3) if they are (B, 3, H, W)
+    if images.ndim == 4 and images.shape[1] == 3 and images.shape[3] != 3:
+        images = images.transpose(0, 2, 3, 1)
+
+    if depth_conf is None:
+        depth_conf = np.ones_like(depth_maps)
+
+    # 1. Compute camera centers to find nearest neighbors
+    Rs = extrinsics[:, :3, :3]
+    ts = extrinsics[:, :3, 3:4]
+    translations = -(Rs.transpose(0, 2, 1) @ ts).squeeze(-1)  # (B, 3)
+
+    # 2. Unproject all points to world coordinates beforehand
+    world_points_all = unproject_depth_map_to_point_map(depth_maps, extrinsics, intrinsics)
+
+    ext_t = torch.tensor(extrinsics, dtype=torch.float32, device=device)
+    int_t = torch.tensor(intrinsics, dtype=torch.float32, device=device)
+    images_t = torch.tensor(images, dtype=torch.float32, device=device)
+    depth_maps_t = torch.tensor(depth_maps, dtype=torch.float32, device=device)
+
+    camera_errors = []
+
+    for i in range(B):
+        # Find nearest k cameras (excluding itself)
+        distances = np.linalg.norm(translations - translations[i], axis=1)
+        # argsort returns indices of sorted distances. [0] is itself (dist=0).
+        nearest_idx = np.argsort(distances)[1: k + 1]
+
+        neighbor_points = []
+        neighbor_colors = []
+
+        # Gather points and colors from neighbors
+        for j in nearest_idx:
+            # Mask out invalid depth points and low confidence points
+            valid_mask = (depth_maps[j] > 1e-8) & (~np.isnan(depth_maps[j])) & (depth_conf[j] > 0.0)
+            neighbor_points.append(world_points_all[j][valid_mask])
+            neighbor_colors.append(images[j][valid_mask])
+
+        if len(neighbor_points) == 0:
+            camera_errors.append(float("inf"))
+            continue
+
+        cat_points = np.concatenate(neighbor_points, axis=0)
+        cat_colors = np.concatenate(neighbor_colors, axis=0)
+
+        if cat_points.shape[0] == 0:
+            camera_errors.append(float("inf"))
+            continue
+
+        wp_t = torch.tensor(cat_points, dtype=torch.float32, device=device)
+        rgb_t = torch.tensor(cat_colors, dtype=torch.float32, device=device)
+
+        # 3. Project aggregated points into target camera i
+        image_points, cam_points = project_world_points_to_cam(wp_t, ext_t[i : i + 1], int_t[i : i + 1])
+        image_points = image_points.squeeze(0)  # (N, 2)
+        cam_points = cam_points.squeeze(0)  # (3, N)
+
+        u = image_points[:, 0].round().long()
+        v = image_points[:, 1].round().long()
+        z = cam_points[2, :]
+
+        # Filter out-of-bounds projections
+        bounds_mask = (u >= 0) & (u < W) & (v >= 0) & (v < H) & (z > 1e-4)
+        u_valid = u[bounds_mask]
+        v_valid = v[bounds_mask]
+        z_valid = z[bounds_mask]
+        rgb_valid = rgb_t[bounds_mask]
+
+        if u_valid.shape[0] == 0:
+            camera_errors.append(float("inf"))
+            continue
+
+        # 4. Depth Sorting (Painter's Algorithm)
+        # Sort descending by z so that closer points are written last and overwrite further ones
+        sort_idx = torch.argsort(z_valid, descending=True)
+        u_sorted = u_valid[sort_idx]
+        v_sorted = v_valid[sort_idx]
+        z_sorted = z_valid[sort_idx]
+        rgb_sorted = rgb_valid[sort_idx]
+
+        # Initialize Render buffers
+        render_depth = torch.zeros((H, W), dtype=torch.float32, device=device)
+        render_rgb = torch.zeros((H, W, 3), dtype=torch.float32, device=device)
+
+        # Assign projected points to image plane
+        render_depth[v_sorted, u_sorted] = z_sorted
+        render_rgb[v_sorted, u_sorted] = rgb_sorted
+
+        # 5. Evaluate against Ground Truth for camera i
+        gt_depth = depth_maps_t[i]
+        gt_rgb = images_t[i]
+
+        # Compare only where both GT and Render are populated
+        eval_mask = (render_depth > 1e-4) & (gt_depth > 1e-8) & (~torch.isnan(gt_depth))
+
+        if eval_mask.sum() == 0:
+            camera_errors.append(float("inf"))
+            continue
+
+        depth_err = torch.abs(render_depth[eval_mask] - gt_depth[eval_mask]).mean().item()
+        photo_err = torch.abs(render_rgb[eval_mask] - gt_rgb[eval_mask]).mean().item()
+
+        total_err = depth_weight * depth_err + photo_weight * photo_err
+        camera_errors.append(total_err)
+
+    # 6. Find the indices with the largest errors
+    camera_errors_arr = np.array(camera_errors)
+
+    # Handle infinites and NaNs by treating them as the highest possible error (definite outliers)
+    camera_errors_arr[np.isnan(camera_errors_arr)] = float("inf")
+
+    outlier_indices = np.argsort(camera_errors_arr)[-num_outliers:].tolist()
+
+    return outlier_indices
 
 
 def axis_angle_to_matrix(axis_angle: torch.Tensor) -> torch.Tensor:

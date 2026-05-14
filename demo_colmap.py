@@ -17,7 +17,7 @@ import torch
 import torch.nn.functional as F
 import tqdm
 
-from cam_opt import optimize_poses
+from cam_opt import detect_outlier_cameras, optimize_poses
 from cam_utils import c2w_to_w2c, umeyama_alignment_with_orientation, w2c_to_c2w
 from combine_clouds import save_cameras_json
 from reconstruct_args import SAMPLING_MODE
@@ -77,9 +77,7 @@ def parse_args():
     parser.add_argument(
         "--reconstruct_pose_opt", action="store_true", default=False, help="Use pose optimization during reconstruction"
     )
-    parser.add_argument(
-        "--optimisation_iterations", type=int, default=0, help="Number of optimisation iterations"
-    )
+    parser.add_argument("--optimisation_iterations", type=int, default=0, help="Number of optimisation iterations")
     parser.add_argument(
         "--optimisation_neighbourhood", type=int, default=10, help="Size of neighbourhood for optimisation"
     )
@@ -531,13 +529,19 @@ def run_vggt(
         model = load_model()
     model_load_t2 = time.time()
     model_alloc, model_res = model_vram_mb = get_gpu_stats()
-    print(
-        f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB"
-    )
+    print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
     if optimisation_iterations > 0:
-        for _ in tqdm.tqdm(range(optimisation_iterations)):
+        outlier_indices = detect_outlier_cameras(
+            extrinsic,
+            intrinsic,
+            depth_map,
+            images.cpu().numpy(),
+            depth_conf,
+            num_outliers=optimisation_iterations,
+        )
+        for j in tqdm.tqdm(range(optimisation_iterations)):
             # 1. Sample a random point
-            random_index = np.random.randint(extrinsic.shape[0])
+            random_index = outlier_indices[j]
 
             def get_camera_centers(w2c_mats):
                 Rs = w2c_mats[:, :3, :3]
@@ -553,10 +557,6 @@ def run_vggt(
             translations = get_camera_centers(extrinsic)
             rotations = get_camera_rotations(extrinsic)
 
-            cam_from_world = pycolmap.Rigid3d(
-                pycolmap.Rotation3d(extrinsic[random_index][:3, :3]), extrinsic[random_index][:3, 3]
-            )  # Rot and Trans
-            assert np.allclose(cam_from_world.inverse().translation, translations[random_index])
             # 2. Find the nearest neighbours
             # (technically this should also check that they are facing in a similar direction)
             nearest_indices = knn(translations, random_index, optimisation_neighbourhood)
