@@ -102,6 +102,8 @@ class ReconstructArgs:
                 parts.append("errconf")
         elif self.choice == "colmap":
             parts.append(self.colmap_mode)
+            if self.camera_type != "SIMPLE_RADIAL":
+                parts.append(self.camera_type.lower().replace("simple_", "m"))
 
         parts.append(self.image_mode)
 

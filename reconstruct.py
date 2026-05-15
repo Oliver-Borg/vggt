@@ -73,7 +73,9 @@ def run_colmap_pipeline(
     db_path: str,
     sparse_path: str,
     low_view_count: bool = False,
+    camera_type: CAMERA_TYPE = "SIMPLE_PINHOLE",
     shared_camera: bool = False,
+    mask_path: str | None = None,
 ) -> COLMAPProfiling:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
@@ -86,9 +88,21 @@ def run_colmap_pipeline(
 
     passed = True
 
-    feature_extractor_args = [COLMAP, "feature_extractor", "--database_path", db_path, "--image_path", images_path]
+    feature_extractor_args = [
+        COLMAP,
+        "feature_extractor",
+        "--database_path",
+        db_path,
+        "--image_path",
+        images_path,
+        "--ImageReader.camera_model",
+        camera_type,
+    ]
     if shared_camera:
         feature_extractor_args.extend(["--ImageReader.single_camera", "1"])
+
+    if mask_path is not None:
+        feature_extractor_args.extend(["--ImageReader.mask_path", mask_path])
 
     matcher_args = [COLMAP, "exhaustive_matcher", "--database_path", db_path]
     if low_view_count:
@@ -318,7 +332,9 @@ def get_image_list(
     return all_images
 
 
-def check_files(base_output: Path, all_images: list[str], require_depth_conf: bool, shared_camera: bool) -> bool:
+def check_files(
+    base_output: Path, all_images: list[str], require_depth_conf: bool, shared_camera: bool, require_masks: bool = False
+) -> bool:
     if not (
         os.path.exists(base_output)
         and os.path.exists(base_output / "images")
@@ -326,6 +342,9 @@ def check_files(base_output: Path, all_images: list[str], require_depth_conf: bo
     ):
         return False
     valid = True
+
+    if require_masks and not os.path.exists(base_output / "masks"):
+        return False
 
     images_path = Path(base_output) / "images"
     num_images = len(all_images)
@@ -375,6 +394,19 @@ def check_files(base_output: Path, all_images: list[str], require_depth_conf: bo
         print("Invalid images found in COLMAP database. Forcing reconstruction.")
         valid = False
 
+    if (
+        require_masks
+        and len(
+            set([name + ".png" for name in all_images])
+            & (existing_masks := set(os.listdir(Path(base_output) / "masks")))
+        )
+        != num_images
+    ):
+        print("Invalid masks found in directory. Forcing reconstruction.")
+        for mask in existing_masks:
+            os.remove(Path(base_output) / "masks" / mask)
+        valid = False
+
     if require_depth_conf:
         depths_path = Path(base_output) / "depths"
         if not os.path.exists(depths_path):
@@ -412,6 +444,7 @@ def run_reconstruction(
     base_out = args.base_out
     sparse_path = os.path.join(base_out, "sparse")
     images_path = os.path.join(base_out, "images")
+    masks_path = os.path.join(base_out, "masks")
     db_path = os.path.join(base_out, "database.db")
 
     input_path = args.input
@@ -421,8 +454,10 @@ def run_reconstruction(
 
     pcd = None
 
+    is_nerf_synthetic = "nerf_synthetic" in Path(input_path).parts
+
     if args.image_mode == "farthestpose" or args.image_mode == "nearestpose":
-        if "nerf_synthetic" in Path(input_path).parts:
+        if is_nerf_synthetic:
             pcd = load_cameras(Path(input_path).parent / "transforms_train.json")
         else:
             pcd = load_cameras(Path(input_path).parent / "sparse")
@@ -436,12 +471,15 @@ def run_reconstruction(
         all_images,
         require_depth_conf=args.require_depth_conf and args.choice == "vggt",
         shared_camera=args.shared_camera,
+        require_masks=args.choice == "colmap" and is_nerf_synthetic,
     ):
         if os.path.exists(base_out):
             shutil.rmtree(base_out)
 
     os.makedirs(sparse_path, exist_ok=True)
     os.makedirs(images_path, exist_ok=True)
+    if is_nerf_synthetic:
+        os.makedirs(masks_path, exist_ok=True)
 
     if os.path.exists(os.path.join(base_out, "stat.json")) and not args.force:
         print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
@@ -461,6 +499,14 @@ def run_reconstruction(
 
     print(f"Copying {len(all_images)} images from {Path(input_path)} to {Path(images_path)}...")
     for img in all_images:
+        img_full_path = os.path.join(input_path, img)
+
+        if is_nerf_synthetic:
+            im_bgra = cv2.imread(img_full_path, cv2.IMREAD_UNCHANGED)
+            if im_bgra is not None and im_bgra.shape[2] == 4:
+                mask = im_bgra[:, :, 3]
+                cv2.imwrite(os.path.join(masks_path, f"{img}.png"), mask)
+
         if args.copy_mode is None:
             shutil.copy2(os.path.join(input_path, img), os.path.join(images_path, img))
         elif args.copy_mode == "crop" or args.copy_mode == "square":
@@ -473,6 +519,14 @@ def run_reconstruction(
             if w > crop_size:
                 im = im[:, (w - crop_size) // 2: (w + crop_size) // 2]
             cv2.imwrite(os.path.join(images_path, img), im)
+
+            if is_nerf_synthetic:
+                m = cv2.imread(os.path.join(masks_path, f"{img}.png"), cv2.IMREAD_GRAYSCALE)
+                if h > crop_size:
+                    m = m[(h - crop_size) // 2: (h + crop_size) // 2]
+                if w > crop_size:
+                    m = m[:, (w - crop_size) // 2: (w + crop_size) // 2]
+                cv2.imwrite(os.path.join(masks_path, f"{img}.png"), m)
 
         elif args.copy_mode == "tiles":
             raise NotImplementedError()
@@ -489,6 +543,7 @@ def run_reconstruction(
             sparse_path,
             low_view_count=args.colmap_mode == "relaxed",
             shared_camera=args.shared_camera,
+            mask_path=masks_path if is_nerf_synthetic else None,
         )
     elif args.choice == "vggt":
         profiling = run_vggt_pipeline(
@@ -528,7 +583,7 @@ def run_reconstruction(
         os.rename(best_path, first_path)
         os.rename(tmp_path, best_path)
 
-    if "nerf_synthetic" in Path(input_path).parts:
+    if is_nerf_synthetic:
         gt_pcd = load_cameras(Path(input_path).parent / "transforms_train.json")
     else:
         gt_pcd = load_cameras(Path(input_path).parent / "sparse")
@@ -598,9 +653,15 @@ if __name__ == "__main__":
     single_parser.add_argument("--save_conf_as_errors", action="store_true", help="Save depth confidence map as errors")
     single_parser.add_argument("--shared_camera", action="store_true", help="Share cameras between images")
     single_parser.add_argument("--max_ba_iterations", type=int, default=50, help="Max BA iterations")
-    single_parser.add_argument("--reconstruct_pose_opt", action="store_true", help="Use pose optimization during reconstruction")
-    single_parser.add_argument("--optimisation_iterations", type=int, default=0, help="Number of optimisation iterations")
-    single_parser.add_argument("--optimisation_neighbourhood", type=int, default=10, help="Size of neighbourhood for optimisation")
+    single_parser.add_argument(
+        "--reconstruct_pose_opt", action="store_true", help="Use pose optimization during reconstruction"
+    )
+    single_parser.add_argument(
+        "--optimisation_iterations", type=int, default=0, help="Number of optimisation iterations"
+    )
+    single_parser.add_argument(
+        "--optimisation_neighbourhood", type=int, default=10, help="Size of neighbourhood for optimisation"
+    )
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(
@@ -620,9 +681,9 @@ if __name__ == "__main__":
 
         for config_dict in tqdm.tqdm(configs):
             run_args = ReconstructArgs(**config_dict)
-            run_reconstruction(run_args)
-            # try:
-            #     run_reconstruction(run_args)
-            # except Exception as e:
-            #     print(e)
-            #     continue
+            # run_reconstruction(run_args)
+            try:
+                run_reconstruction(run_args)
+            except Exception as e:
+                print(e)
+                continue
