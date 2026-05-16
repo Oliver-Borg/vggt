@@ -450,7 +450,9 @@ def run_reconstruction(
     input_path = args.input
 
     input_files: list[str] = os.listdir(input_path)
-    all_images: list[str] = list(sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]))
+    all_images: list[str] = list(
+        sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg")) and "depth" not in f])
+    )
 
     pcd = None
 
@@ -458,7 +460,7 @@ def run_reconstruction(
 
     if args.image_mode == "farthestpose" or args.image_mode == "nearestpose":
         if is_nerf_synthetic:
-            pcd = load_cameras(Path(input_path).parent / "transforms_train.json")
+            pcd = load_cameras(Path(input_path).parent / f"transforms_{Path(input_path).name}.json")
         else:
             pcd = load_cameras(Path(input_path).parent / "sparse")
 
@@ -584,7 +586,7 @@ def run_reconstruction(
         os.rename(tmp_path, best_path)
 
     if is_nerf_synthetic:
-        gt_pcd = load_cameras(Path(input_path).parent / "transforms_train.json")
+        gt_pcd = load_cameras(Path(input_path).parent / f"transforms_{Path(input_path).name}.json")
     else:
         gt_pcd = load_cameras(Path(input_path).parent / "sparse")
     pred_pcds = load_point_clouds(Path(base_out) / "sparse")

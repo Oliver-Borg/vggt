@@ -405,7 +405,7 @@ def load_metrics_to_df(
 def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, float]]:
     """Extracts RRE and RTE from SfM json."""
     if "metrics" in data and "mean_rre_deg" in data["metrics"]:
-        return {
+        metrics = {
             "rre": data["metrics"]["mean_rre_deg"],
             "rte": data["metrics"]["mean_rte"],
             "num_aligned": data["metrics"]["num_aligned"],
@@ -414,6 +414,17 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
                 "rte": data["metrics"]["all_rte"],
             },
         }
+        if "mean_depth_l1" in data["metrics"]:
+            metrics["pred_depth_l1"] = data["metrics"]["mean_depth_l1"]
+            metrics["pred_depth_absrel"] = data["metrics"]["mean_depth_absrel"]
+            metrics["pred_depth_rmse"] = data["metrics"]["mean_depth_rmse"]
+
+        if "all_depth_l1" in data["metrics"]:
+            metrics["raw_eval_metrics"]["pred_depth_l1"] = data["metrics"]["all_depth_l1"]
+            metrics["raw_eval_metrics"]["pred_depth_absrel"] = data["metrics"]["all_depth_absrel"]
+            metrics["raw_eval_metrics"]["pred_depth_rmse"] = data["metrics"]["all_depth_rmse"]
+
+        return metrics
     return {}
 
 
@@ -1633,7 +1644,10 @@ def plot_graph(
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
         {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count"},
-        {"y": "depth_l1", "title": "Depth Loss ↓", "ylabel": "Loss", "direction": "↓"},
+        {"y": "depth_l1", "title": "Splatted Depth L1 ↓", "ylabel": "Loss", "direction": "↓"},
+        {"y": "pred_depth_l1", "title": "Predicted Depth L1 ↓", "ylabel": "Loss", "direction": "↓"},
+        {"y": "pred_depth_absrel", "title": "Predicted Depth AbsRel ↓", "ylabel": "Loss", "direction": "↓"},
+        {"y": "pred_depth_rmse", "title": "Predicted Depth RMSE ↓", "ylabel": "Loss", "direction": "↓"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}

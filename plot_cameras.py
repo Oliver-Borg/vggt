@@ -184,7 +184,7 @@ def plot_cameras(
 
         dxs.append(look_dir[0])
         dys.append(look_dir[1])
-        colors_list.append(colors.get(name, (0, 0, 0, 1.0)))  # Default to black if missing
+        colors_list.append(colors.get(name) or (0.5, 0.5, 0.5, 1.0))  # Default to gray if missing
 
     xs_arr, ys_arr, colors_arr, is_ups_arr = map(np.array, [xs, ys, colors_list, is_ups])
 
