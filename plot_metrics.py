@@ -428,6 +428,7 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "eval_rte": data.get("eval_rte"),
         "eval_rre": data.get("eval_rre"),
         "raw_metrics": data.get("raw_metrics"),
+        "depth_l1": data.get("depth_l1"),
     }
 
     if parsed_data["psnr"] is not None and parsed_data["lpips"] is not None and parsed_data["ssim"] is not None:
@@ -1127,7 +1128,9 @@ def _process_single_render(
     if not isinstance(raw_metrics, dict):
         raw_metrics = {}
     depth_factors: list[float] = raw_metrics.get("depth_factor", [])
+    depth_l1s: list[float] = raw_metrics.get("depth_l1", [])
     depth_factor = depth_factors[render_num] if depth_factors else None
+    depth_l1 = depth_l1s[render_num] if depth_l1s else None
 
     try:
         img = Image.open(render).convert("RGB")
@@ -1150,7 +1153,10 @@ def _process_single_render(
 
         if depth_factor is not None:
             # There is an extra column for depth
-            gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
+            if w % 7 == 0 and w % 5 != 0:
+                gt_img, pred_img, _, _, depth, _, _ = divide_img(img, splits=7)
+            else:
+                gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
             depth = np.array(depth).mean(axis=-1)
             depth *= depth_factor
             median_depth = np.median(np.array(depth)) + 1e-5
@@ -1161,7 +1167,16 @@ def _process_single_render(
             gt_img, pred_img, _, _ = divide_img(img, splits=4)
             depth = None
 
+        # DEBUGGING
+        # w, h = pred_img.size
+        # gt_cropped = gt_img.crop((w // 2, 0, w, h))
+        # pred_img.paste(gt_cropped, (w // 2, 0))
+
         if show_gt:
+            w, h = gt_img.size
+            image_width = 1200
+            image_height = int(image_width * h / w)
+            gt_img = gt_img.resize((image_width, image_height))
             gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
             images.append(gt_img)
             return images
@@ -1357,6 +1372,7 @@ def plot_cameras(
     x_axis: str | None = None,
     varying_colors: bool = False,
     use_error_colors: bool = False,
+    max_cols: int = 3,
 ):
     dest_base.mkdir(parents=True, exist_ok=True)
     series_list: list[CameraSeries] = []
@@ -1418,6 +1434,7 @@ def plot_cameras(
         dest_base,
         image_names,
         use_error_colors=use_error_colors,
+        max_cols=max_cols,
     )
 
 
@@ -1616,6 +1633,7 @@ def plot_graph(
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
         {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count"},
+        {"y": "depth_l1", "title": "Depth Loss ↓", "ylabel": "Loss", "direction": "↓"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
@@ -1781,11 +1799,12 @@ def plot_graph(
     suffix = f"plots/{prefix}/full_evaluation-{name}-{x_axis}-{split_param}"
 
     os.makedirs(os.path.dirname(suffix), exist_ok=True)
+    serial_df = df.copy()
 
-    if "raw_metrics" in df.columns:
-        serial_df = df.drop("raw_metrics", axis=1)
-    else:
-        serial_df = df
+    if "raw_metrics" in serial_df.columns:
+        serial_df = serial_df.drop("raw_metrics", axis=1)
+    if "raw_eval_metrics" in serial_df.columns:
+        serial_df = serial_df.drop("raw_eval_metrics", axis=1)
 
     csv_out_file = f"{suffix}.csv"
     os.makedirs(os.path.dirname(csv_out_file), exist_ok=True)
@@ -1850,7 +1869,9 @@ def plot_graph(
     if camera_folders is not None and make_camera_plot:
         camera_df = df[df["input_folder"].isin(camera_folders)]
         if not camera_df.empty:
-            plot_cameras(camera_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True)
+            plot_cameras(
+                camera_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True, max_cols=max_render_cols
+            )
 
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
