@@ -428,6 +428,19 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
     return {}
 
 
+def get_quality(psnr: float, ssim: float, lpips: float):
+    scaled_psnr = (psnr - 14) / (32 - 14)
+    scaled_ssim = (ssim - 0.35) / (0.92 - 0.35)
+    scaled_lpips = (lpips - 0.06) / (0.60 - 0.06)
+    quality = 1 / 3 * (scaled_psnr + scaled_ssim + 1 - scaled_lpips)
+    return quality
+
+
+def get_avge(psnr: float, ssim: float, lpips: float):
+    avge = 1 / 3 * (10 ** (-psnr / 10) + (1 - ssim) ** 0.5 + lpips)
+    return avge
+
+
 def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float | int | None]:
     """Extracts PSNR, LPIPS and SSIM from gsplat json."""
     parsed_data = {
@@ -440,17 +453,24 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "eval_rre": data.get("eval_rre"),
         "raw_metrics": data.get("raw_metrics"),
         "depth_l1": data.get("depth_l1"),
+        "depth_abs_rel": data.get("depth_abs_rel"),
     }
 
     if parsed_data["psnr"] is not None and parsed_data["lpips"] is not None and parsed_data["ssim"] is not None:
-        scaled_psnr = (parsed_data["psnr"] - 14) / (32 - 14)
-        scaled_ssim = (parsed_data["ssim"] - 0.35) / (0.92 - 0.35)
-        scaled_lpips = (parsed_data["lpips"] - 0.06) / (0.60 - 0.06)
-
-        quality = 1 / 3 * (scaled_psnr + scaled_ssim + 1 - scaled_lpips)
-        parsed_data["quality"] = quality
+        parsed_data["quality"] = get_quality(parsed_data["psnr"], parsed_data["ssim"], parsed_data["lpips"])
+        parsed_data["avge"] = get_avge(parsed_data["psnr"], parsed_data["ssim"], parsed_data["lpips"])
+        if parsed_data["raw_metrics"] is not None:
+            for psnr, lpips, ssim in zip(
+                parsed_data["raw_metrics"]["psnr"],
+                parsed_data["raw_metrics"]["lpips"],
+                parsed_data["raw_metrics"]["ssim"],
+            ):
+                parsed_data.setdefault("raw_eval_metrics", {"quality": [], "avge": []})
+                parsed_data["raw_eval_metrics"]["quality"].append(get_quality(psnr, ssim, lpips))
+                parsed_data["raw_eval_metrics"]["avge"].append(get_avge(psnr, ssim, lpips))
     else:
         parsed_data["quality"] = None
+        parsed_data["avge"] = None
 
     if "num_points" in data:
         parsed_data["real_num_points"] = int(data["num_points"])
@@ -1169,11 +1189,13 @@ def _process_single_render(
             else:
                 gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
             depth = np.array(depth).mean(axis=-1)
-            depth *= depth_factor
-            median_depth = np.median(np.array(depth)) + 1e-5
-            depth = depth / median_depth / 10
-            depth = np.clip(depth, 0.0, 1.0)
-            depth = Image.fromarray(np_rgb(depth))
+            # depth *= depth_factor
+            # median_depth = np.median(depth[depth > 0]) + 1e-5
+            # depth = depth / median_depth / 10
+            # depth = np.clip(depth, 0.0, 1.0)
+            depth_rgb = np_rgb(depth, "jet")
+            depth_rgb[depth == 0, :] = 0
+            depth = Image.fromarray(depth_rgb)
         else:
             gt_img, pred_img, _, _ = divide_img(img, splits=4)
             depth = None
@@ -1639,14 +1661,16 @@ def plot_graph(
         {"y": "lpips", "title": "LPIPS ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "ssim", "title": "SSIM ↑", "ylabel": "Score", "direction": "↑"},
         {"y": "quality", "title": "Composite Quality ↑", "ylabel": "Score", "direction": "↑"},
+        {"y": "avge", "title": "Average Error ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
         {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count"},
         {"y": "depth_l1", "title": "Splatted Depth L1 ↓", "ylabel": "Loss", "direction": "↓"},
+        {"y": "depth_abs_rel", "title": "Splatted Depth Abs Rel ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "pred_depth_l1", "title": "Predicted Depth L1 ↓", "ylabel": "Loss", "direction": "↓"},
-        {"y": "pred_depth_absrel", "title": "Predicted Depth AbsRel ↓", "ylabel": "Loss", "direction": "↓"},
+        {"y": "pred_depth_absrel", "title": "Predicted Depth Abs Rel ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "pred_depth_rmse", "title": "Predicted Depth RMSE ↓", "ylabel": "Loss", "direction": "↓"},
     ]
 
