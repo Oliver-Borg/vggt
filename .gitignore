@@ -150,6 +150,7 @@ skyseg.onnx
 
 data/
 colmap_outputs/
+colmap_outputs_backup/
 vggt_outputs/
 gt_outputs/
 combined_outputs/
