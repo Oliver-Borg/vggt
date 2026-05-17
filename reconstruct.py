@@ -451,7 +451,13 @@ def run_reconstruction(
 
     input_files: list[str] = os.listdir(input_path)
     all_images: list[str] = list(
-        sorted([f for f in input_files if f.lower().endswith((".png", ".jpg", ".jpeg")) and "depth" not in f])
+        sorted(
+            [
+                f
+                for f in input_files
+                if f.lower().endswith((".png", ".jpg", ".jpeg")) and "depth" not in f and "normal" not in f
+            ]
+        )
     )
 
     pcd = None

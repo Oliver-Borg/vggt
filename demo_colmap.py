@@ -747,6 +747,8 @@ def run_vggt(
         points_rgb = points_rgb[conf_mask]
         points_errors = 1 / np.maximum(orig_depth_conf[conf_mask], 1)
         points_conf_rgb = np_rgb(depth_conf[conf_mask] ** 2 * depth_map[conf_mask].flatten())
+        if points_3d.shape[0] < num_frames:
+            raise ValueError("Not enough points to build reconstruction.")
 
         print("Converting to COLMAP format")
         reconstruction = batch_np_matrix_to_pycolmap_wo_track(

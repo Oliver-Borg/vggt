@@ -44,6 +44,7 @@ def randomly_limit_trues(mask: np.ndarray, max_trues: int, depth_conf: np.ndarra
     # restore original shape
     return limited_flat_mask.reshape(mask.shape)
 
+
 def uniform_limit_trues(
     mask: np.ndarray,
     max_trues: int,
@@ -65,14 +66,12 @@ def uniform_limit_trues(
     # if already within budget, return as-is
     if true_indices.size <= max_trues:
         return mask
-    
-    points_3d = points_3d[mask]
 
+    points_3d = points_3d[mask]
 
     # pcd = o3d.geometry.PointCloud()
     # pcd.points = o3d.utility.Vector3dVector(points_3d)
     # ret = pcd.voxel_down_sample(0.05)
-
 
     flat_points = points_3d.reshape((points_3d.size // 3, 3))
     mins = flat_points.min(axis=0)
@@ -90,33 +89,38 @@ def uniform_limit_trues(
 
     # Ideally we will have a value of grid_size that gives us ~100000 occupied voxels
     while iters < 10 and lower_grid_size < upper_grid_size:
-        disc_points = (norm_points * grid_size).round().astype(np.uint32)
-        flat_voxel_inds = disc_points[:, 0] * grid_size ** 2 + disc_points[:, 1] * grid_size + disc_points[:, 2]
+        # Cast to uint64 to prevent overflow when grid_size is large
+        disc_points = (norm_points * grid_size).round().astype(np.uint64)
+        flat_voxel_inds = disc_points[:, 0] * (np.uint64(grid_size) ** 2) + disc_points[:, 1] * np.uint64(grid_size) + disc_points[:, 2]
         unique_flat_voxel_inds, counts = np.unique(flat_voxel_inds, return_counts=True)
         min_grid_occupancy = int(math.ceil(counts.mean()))
         cur_size = np.count_nonzero(counts >= min_grid_occupancy)  # Only keep voxels that have >= min_grid_occupancy points
         # cur_size = unique_flat_voxel_inds.size
+
         if cur_size == max_trues:
             best_grid_size = grid_size
             closest_count = cur_size
+            best_min_grid_occupancy = min_grid_occupancy
             break
         elif cur_size < max_trues:
-            lower_grid_size = grid_size
-            grid_size = (lower_grid_size + upper_grid_size) // 2
             if closest_count is None or cur_size > closest_count:
                 closest_count = cur_size
                 best_grid_size = grid_size
                 best_min_grid_occupancy = min_grid_occupancy
+
+            lower_grid_size = grid_size
+            grid_size = (lower_grid_size + upper_grid_size) // 2
         else:
             upper_grid_size = grid_size
             grid_size = (lower_grid_size + upper_grid_size) // 2
         iters += 1
         print(f"Iter {iters} best count {closest_count} for grid size {best_grid_size}")
-    
+
     grid_size = best_grid_size
-    disc_points = (norm_points * grid_size).round().astype(np.uint32)
-    flat_voxel_inds = disc_points[:, 0] * grid_size ** 2 + disc_points[:, 1] * grid_size + disc_points[:, 2]
-    unique_flat_voxel_inds: np.ndarray = np.unique(flat_voxel_inds)
+    # Cast to uint64 here as well
+    disc_points = (norm_points * grid_size).round().astype(np.uint64)
+    flat_voxel_inds = disc_points[:, 0] * (np.uint64(grid_size) ** 2) + disc_points[:, 1] * np.uint64(grid_size) + disc_points[:, 2]
+    unique_flat_voxel_inds, counts = np.unique(flat_voxel_inds, return_counts=True)
 
     # We can then sample the highest confidence point within each
 
@@ -124,17 +128,21 @@ def uniform_limit_trues(
     limited_flat_mask = np.zeros(true_indices.size, dtype=bool)
     inds_sorter = np.lexsort((flat_confs, flat_voxel_inds))
     flat_inds_sorted = flat_voxel_inds[inds_sorter]
-    last_indices = np.where(
-        (flat_inds_sorted[:-1] != flat_inds_sorted[1:])
-        & (flat_inds_sorted[:-1] == np.roll(flat_inds_sorted, shift=(best_min_grid_occupancy,))[:-1])
-    )[0]
-    if len(last_indices) == 0:
-        last_indices = np.where(
-            (flat_inds_sorted[:-1] != flat_inds_sorted[1:])
-            & (flat_inds_sorted[:-1] == np.roll(flat_inds_sorted, shift=(1,))[:-1])
-        )[0]
-        if len(last_indices) > max_trues:
-            last_indices = last_indices[:max_trues]
+
+    # Correctly identify the last elements of each voxel group
+    is_last_of_group = np.append(flat_inds_sorted[:-1] != flat_inds_sorted[1:], True)
+
+    # Filter by the occupancy threshold found during search
+    valid_voxels = unique_flat_voxel_inds[counts >= best_min_grid_occupancy]
+    if valid_voxels.size == 0:
+        valid_voxels = unique_flat_voxel_inds
+
+    last_indices_all = np.where(is_last_of_group)[0]
+    mask_valid = np.isin(flat_inds_sorted[last_indices_all], valid_voxels)
+    last_indices = last_indices_all[mask_valid]
+
+    if len(last_indices) > max_trues:
+        last_indices = last_indices[:max_trues]
 
     set_mask = np.zeros_like(limited_flat_mask)
     set_mask[last_indices] = True
@@ -143,9 +151,9 @@ def uniform_limit_trues(
 
     full_sized_mask = np.zeros(mask.size, dtype=bool)
     full_sized_mask[mask.flatten()] = sorted_mask
-    
-    # TODO Fix the slight mismatch here
-    # assert np.count_nonzero(limited_flat_mask) == closest_count
+
+    # Assert checks sorted_mask, which contains the final truth flags mapping back correctly
+    assert np.count_nonzero(sorted_mask) == closest_count, f"{np.count_nonzero(sorted_mask)} != {closest_count}"
 
     # restore original shape
     return full_sized_mask.reshape(mask.shape)
