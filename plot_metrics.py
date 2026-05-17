@@ -1149,7 +1149,9 @@ def _process_single_render(
 ):
     images = []
     # Grab only the first image for this validation step
-    render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg")))
+    render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg"))) + sorted(
+        list(render_src_dir.glob(f"{p.stem}_*.png"))
+    )
 
     if not render_files:
         return images
