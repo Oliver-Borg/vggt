@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import TypedDict, get_args
+from typing import Callable, TypedDict, get_args
 import numpy as np
 from scipy.spatial.distance import cdist
 import torch
@@ -76,6 +76,7 @@ def run_colmap_pipeline(
     camera_type: CAMERA_TYPE = "SIMPLE_PINHOLE",
     shared_camera: bool = False,
     mask_path: str | None = None,
+    random_seed: int = 42,
 ) -> COLMAPProfiling:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
@@ -104,7 +105,12 @@ def run_colmap_pipeline(
     if mask_path is not None:
         feature_extractor_args.extend(["--ImageReader.mask_path", mask_path])
 
-    matcher_args = [COLMAP, "exhaustive_matcher", "--database_path", db_path]
+    matcher_args = [
+        COLMAP,
+        "exhaustive_matcher",
+        "--database_path",
+        db_path,
+    ]
     if low_view_count:
         matcher_args.extend(
             [
@@ -126,6 +132,8 @@ def run_colmap_pipeline(
         images_path,
         "--output_path",
         sparse_path,
+        "--Mapper.random_seed",
+        str(random_seed),
     ]
     if low_view_count:
         mapper_args.extend(
@@ -236,8 +244,14 @@ def save_timing(
         json.dump(stat, f, indent=4)
 
 
-def _select_indices(coords: np.ndarray, num_images: int, seed: int, farthest: bool = True):
-    # Mean Farthest Point Sampling
+def _select_indices(
+    coords: np.ndarray,
+    num_images: int,
+    seed: int,
+    farthest: bool = True,
+    agg_fn: Callable[..., np.ndarray] = np.mean,
+):
+    # Farthest Point Sampling
     # TODO Try out normal Farthest Point Sampling
     # TODO Actually parse GT poses and use the real coordinates
     n = int(coords.shape[0])
@@ -251,14 +265,13 @@ def _select_indices(coords: np.ndarray, num_images: int, seed: int, farthest: bo
         selected_coords = coords[selected_mask]
         remaining_coords = coords[~selected_mask]
         distances = cdist(selected_coords, remaining_coords, metric="euclidean")
-        mean_dists: np.ndarray = distances.mean(axis=0)
-        assert mean_dists.shape[0] == remaining_coords.shape[0]
+        agg_dists: np.ndarray = agg_fn(distances, axis=0)
 
         remaining_indices = all_indices[~selected_mask]
         if farthest:
-            next_index = int(remaining_indices[mean_dists.argmax()])
+            next_index = int(remaining_indices[agg_dists.argmax()])
         else:
-            next_index = int(remaining_indices[mean_dists.argmin()])
+            next_index = int(remaining_indices[agg_dists.argmin()])
 
         selected_indices.append(next_index)
 
@@ -288,6 +301,7 @@ def get_image_list(
         digits = [c for c in name if c.isdigit()]
         return int("".join(digits)) if digits else 0
 
+    # This sort (without sorter) matches the sort used in GSplat
     all_images.sort()
 
     # This means there shouldn't ever be any overlap between these images and evaluation set
@@ -552,6 +566,8 @@ def run_reconstruction(
             low_view_count=args.colmap_mode == "relaxed",
             shared_camera=args.shared_camera,
             mask_path=masks_path if is_nerf_synthetic else None,
+            camera_type=args.camera_type,
+            random_seed=args.seed,
         )
     elif args.choice == "vggt":
         profiling = run_vggt_pipeline(
