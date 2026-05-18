@@ -505,7 +505,11 @@ def run_reconstruction(
 
     if os.path.exists(os.path.join(base_out, "stat.json")) and not args.force:
         print(Path(base_out), "has already been constructed.\nUse --force to force reconstruction.")
-        if not os.path.exists(Path(base_out) / "aligned_cameras.json"):
+        camera_path = Path(base_out) / "aligned_cameras.json"
+        if (
+            not os.path.exists(camera_path)
+            or camera_path.stat().st_mtime < datetime.datetime(2026, 5, 18, 19, 45, 0).timestamp()
+        ):
             # TODO Instead of this save aligned_cams.json and gt_cams.json
             # Then in plot_metrics, we can just read these in
             gt_pcd = load_point_cloud(Path(input_path).parent / "sparse")
@@ -517,6 +521,7 @@ def run_reconstruction(
                 # TODO Use these to demonstrate partial reconstructions
                 save_cameras_json(pred_pcd, Path(base_out) / f"aligned_cameras{i:04d}.json")
             save_cameras_json(gt_pcd, Path(base_out) / "gt_cameras.json")
+            print("Saved aligned cameras")
         return
 
     print(f"Copying {len(all_images)} images from {Path(input_path)} to {Path(images_path)}...")

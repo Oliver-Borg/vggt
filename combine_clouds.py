@@ -11,7 +11,7 @@ import os
 from cam_utils import (
     get_metrics,
     mat_to_quat,
-    umeyama_alignment,
+    stochastic_umeyama_alignment,
     umeyama_alignment_two_points,
     verify_look_at_origin,
 )
@@ -67,7 +67,7 @@ def get_alignment_transform(from_recon: pycolmap.Reconstruction, to_recon: pycol
             to_dirs=to_dirs,
         )
 
-    return umeyama_alignment(from_points=from_points, to_points=to_points)
+    return stochastic_umeyama_alignment(from_points=from_points, to_points=to_points)
 
 
 def load_json_data(path: Path) -> pycolmap.Reconstruction:

@@ -192,6 +192,30 @@ def umeyama_alignment_with_orientation(
     return umeyama_alignment(all_from_points, all_to_points, with_scale, ignore_outliers)
 
 
+def stochastic_umeyama_alignment(
+    from_points: np.ndarray, to_points: np.ndarray, with_scale: bool = True, num_trials: int = 10, num_samples: int = 3
+) -> tuple[float, np.ndarray, np.ndarray]:
+    best_score = float("inf")
+    best_transform = (1.0, np.eye(3), np.zeros(3))
+
+    for _ in range(num_trials):
+        indices = np.random.choice(
+            from_points.shape[0],
+            size=max(min(from_points.shape[0] // num_samples, from_points.shape[0]), 3),
+            replace=False,
+        )
+        s, R, t = umeyama_alignment(from_points[indices], to_points[indices], with_scale=with_scale)
+
+        transformed = s * (R @ from_points.T).T + t
+        score = np.mean(np.linalg.norm(transformed - to_points, axis=1))
+
+        if score < best_score:
+            best_score = score
+            best_transform = (s, R, t)
+
+    return best_transform
+
+
 def get_metrics(
     gt_poses: dict[str, np.ndarray],
     pred_poses: dict[str, np.ndarray],
