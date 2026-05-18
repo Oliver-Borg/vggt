@@ -22,6 +22,7 @@ import scienceplots
 
 from .plot_cameras import CameraSeries, plot_extrinsics
 from .cam_utils import load_poses_from_json
+from .plot_point_cloud import plot_point_clouds
 
 plt.style.use(["science", "grid"])
 
@@ -1423,8 +1424,8 @@ def plot_cameras(
         if p.name == "eval_results.json":
             if i == 0:
                 pose_file = p.parent / "gt_cameras.json"
-                color = cmap(i) if varying_colors else (0.5, 0.5, 0.5, 0.5)
-                color = (*color[:3], 0.5)
+                color = cmap(i) if varying_colors else (0.5, 0.5, 0.5, 1.0)
+                color = (*color[:3], 1.0)
                 series = CameraSeries(
                     label="Ground Truth",
                     colour=color,
@@ -1443,8 +1444,8 @@ def plot_cameras(
                 config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
             pose_file = p.parent / "aligned_cameras.json"
-            color = cmap(i + 1) if varying_colors else (1.0, 0.0, 0.0, 0.5)
-            color = (*color[:3], 0.5)
+            color = cmap(i + 1) if varying_colors else (1.0, 0.0, 0.0, 1.0)
+            color = (*color[:3], 1.0)
             series = CameraSeries(
                 label=config_name,
                 colour=color,
@@ -1504,6 +1505,7 @@ def plot_graph(
     plot_raw: bool = True,
     shared_colors: bool = True,
     make_camera_plot: bool = False,
+    make_pcd_plot: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -1891,6 +1893,7 @@ def plot_graph(
         render_out_base = Path(suffix + "_renders")
         # Use render_folders to filter df based on "folder" column
         render_df = df[df["folder"].isin(render_folders)]
+        render_df = render_df[render_df["val_step"] == max(render_df["val_step"])]
 
         if not render_df.empty:
             create_render_figure(
@@ -1911,6 +1914,13 @@ def plot_graph(
         if not camera_df.empty:
             plot_cameras(
                 camera_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True, max_cols=max_render_cols
+            )
+
+    if camera_folders is not None and make_pcd_plot:
+        pcd_df = df[df["input_folder"].isin(camera_folders)]
+        if not pcd_df.empty:
+            plot_point_clouds(
+                pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols
             )
 
     if dataset_name and experiment_name:
@@ -1949,6 +1959,13 @@ def plot_graph(
                 caption=latex_caption,
                 label=latex_label,
             )
+
+        if make_pcd_plot:
+            latest_pcd_png = f"{latest_suffix}_point_clouds.png"
+            pcd_png_file = Path(suffix + "_pcd") / "point_clouds.png"
+            if pcd_png_file.exists():
+                shutil.copy2(pcd_png_file, latest_pcd_png)
+                print("Latest copy saved:", Path(latest_pcd_png))
 
         latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
         latex_label = f"fig:{experiment_name}_{dataset_name}" if experiment_name else f"fig:{prefix}_{dataset_name}"
