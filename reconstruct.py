@@ -512,7 +512,10 @@ def run_reconstruction(
         ):
             # TODO Instead of this save aligned_cams.json and gt_cams.json
             # Then in plot_metrics, we can just read these in
-            gt_pcd = load_point_cloud(Path(input_path).parent / "sparse")
+            if is_nerf_synthetic:
+                gt_pcd = load_cameras(Path(input_path).parent / f"transforms_{Path(input_path).name}.json")
+            else:
+                gt_pcd = load_cameras(Path(input_path).parent / "sparse")
             pred_pcds = load_point_clouds(Path(base_out) / "sparse")
             for i, pred_pcd in enumerate(pred_pcds):
                 pred_pcd = align_to_world_space(pred_pcd, gt_pcd)
