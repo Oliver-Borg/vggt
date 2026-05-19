@@ -197,7 +197,8 @@ def stochastic_umeyama_alignment(
 ) -> tuple[float, np.ndarray, np.ndarray]:
     best_score = float("inf")
     best_transform = (1.0, np.eye(3), np.zeros(3))
-
+    base_seed = 42
+    np.random.seed(base_seed)
     for _ in range(num_trials):
         indices = np.random.choice(
             from_points.shape[0],
@@ -285,3 +286,74 @@ def verify_look_at_origin(
         "angle_difference_degrees": float(angle_degrees),
         "is_pointing_at_origin": bool(np.isclose(angle_degrees, 0.0, atol=1.0)),
     }
+
+
+def reproject_depth(
+    c2w: np.ndarray,
+    K: np.ndarray,
+    points: np.ndarray,
+    points_rgb: np.ndarray,
+    w: int,
+    h: int,
+    return_rgb: bool = False,
+):
+    """
+    Reproject the depth in the given parser to a new camera to recover a depth map for an arbitrary viewing angle.
+    """
+
+    # Invert camera-to-world matrix to get world-to-camera matrix
+    w2c = np.linalg.inv(c2w)
+
+    # Transform global point cloud to the new camera coordinate space
+    pts_cam = points @ w2c[:3, :3].T + w2c[:3, 3]
+    rgb_points = points_rgb
+
+    # Extract depth (Z axis)
+    z = pts_cam[:, 2]
+
+    # Filter out points that are behind the camera
+    valid_z = z > 0
+    pts_cam = pts_cam[valid_z]
+    z = z[valid_z]
+    rgb_points = rgb_points[valid_z]
+
+    # Project the 3D points onto the 2D image plane
+    pts_img = pts_cam @ K.T
+    u = pts_img[:, 0] / z
+    v = pts_img[:, 1] / z
+
+    # Filter out points that project outside the image bounds
+    valid_uv = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    u = u[valid_uv]
+    v = v[valid_uv]
+    z = z[valid_uv]
+    rgb_points = rgb_points[valid_uv]
+
+    # Convert coordinates to integer pixels
+    u = np.round(u).astype(int).clip(0, w - 1)
+    v = np.round(v).astype(int).clip(0, h - 1)
+
+    # Initialize a depth map with infinity
+    depth_map = np.full((h, w), np.inf)
+    # Support either RGB (3 channels) or RGBA (4 channels) based on parser input
+    rgb_map = np.zeros((h, w, rgb_points.shape[1]), dtype=rgb_points.dtype)
+
+    # Simple Z-buffering: sort points by depth descending
+    # Closer points (smaller Z) will be evaluated last and overwrite further points
+    sort_idx = np.argsort(z)[::-1]
+    u = u[sort_idx]
+    v = v[sort_idx]
+    z = z[sort_idx]
+    rgb_points = rgb_points[sort_idx]
+
+    # Map the depths to the image coordinates
+    depth_map[v, u] = z
+    rgb_map[v, u] = rgb_points
+
+    # Optional: replace infinity with NaN for empty space
+    depth_map[depth_map == np.inf] = np.nan
+
+    if return_rgb:
+        return rgb_map
+
+    return depth_map
