@@ -1966,6 +1966,24 @@ def plot_graph(
             if pcd_png_file.exists():
                 shutil.copy2(pcd_png_file, latest_pcd_png)
                 print("Latest copy saved:", Path(latest_pcd_png))
+            latest_pcd_pdf = f"{latest_suffix}_point_clouds.pdf"
+            pcd_pdf_file = Path(suffix + "_pcd") / "point_clouds.pdf"
+            if pcd_pdf_file.exists():
+                shutil.copy2(pcd_pdf_file, latest_pcd_pdf)
+                print("Latest copy saved:", Path(latest_pcd_pdf))
+                tex_out_path = str(Path(latest_pcd_pdf).with_suffix(".tex"))
+                latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
+                latex_label = (
+                    f"fig:pointclouds_{experiment_name}_{dataset_name}"
+                    if experiment_name
+                    else f"fig:pointclouds_{prefix}_{dataset_name}"
+                )
+                save_figure_tex(
+                    tex_out_path,
+                    "Images/04-Results/PointClouds/" + Path(latest_pcd_pdf).name,
+                    caption=latex_caption,
+                    label=latex_label,
+                )
 
         latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
         latex_label = f"fig:{experiment_name}_{dataset_name}" if experiment_name else f"fig:{prefix}_{dataset_name}"
