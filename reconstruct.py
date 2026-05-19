@@ -508,7 +508,7 @@ def run_reconstruction(
         camera_path = Path(base_out) / "aligned_cameras.json"
         if (
             not os.path.exists(camera_path)
-            or camera_path.stat().st_mtime < datetime.datetime(2026, 5, 18, 19, 45, 0).timestamp()
+            or camera_path.stat().st_mtime < datetime.datetime(2026, 5, 19, 16, 30, 0).timestamp()
         ):
             # TODO Instead of this save aligned_cams.json and gt_cams.json
             # Then in plot_metrics, we can just read these in

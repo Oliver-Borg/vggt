@@ -436,7 +436,7 @@ def swap_and_align(
     use_both_pcds: bool = False,
     align_each_point_set: bool = False,
     keep_backup_cams: bool = False,
-):
+) -> float:
     """
     This migrates the cameras from the camera_source_path to the point_source_path.
     It then transforms the points in point_source_path to match the cameras and rebuilds
@@ -484,6 +484,7 @@ def swap_and_align(
     save_cameras_json(
         orig_rec_pts, output_path / "aligned_cameras.json", common_names=common_names, alignment=(s, R, t)
     )
+    return s
 
 
 def align_to_world_space(rec: pycolmap.Reconstruction, world_rec: pycolmap.Reconstruction):
@@ -658,7 +659,7 @@ if __name__ == "__main__":
     print(f"Glue took {glue_t2 - glue_t1:.2f} seconds")
 
     swap_t1 = time.time()
-    swap_and_align(
+    scaling_factor = swap_and_align(
         cam_path,
         Path(args.point_source) / "sparse",
         Path(args.output_dir) / "sparse",
@@ -678,7 +679,15 @@ if __name__ == "__main__":
     if os.path.exists(Path(args.camera_source) / "depths"):
         shutil.copytree(Path(args.camera_source) / "depths", Path(args.output_dir) / "depths", dirs_exist_ok=True)
     if os.path.exists(Path(args.point_source) / "depths"):
-        shutil.copytree(Path(args.point_source) / "depths", Path(args.output_dir) / "depths", dirs_exist_ok=True)
+        target_depths = Path(args.output_dir) / "depths"
+        os.makedirs(target_depths, exist_ok=True)
+        source_depths = Path(args.point_source) / "depths"
+        for depth_file in os.listdir(source_depths):
+            if depth_file.endswith(".npy"):
+                depth_data = np.load(source_depths / depth_file)
+                # Scale the depth values by the alignment scaling factor
+                depth_data = depth_data * scaling_factor
+                np.save(target_depths / depth_file, depth_data)
     copy_t2 = time.time()
 
     print(f"Copy took {copy_t2 - copy_t1:.2f} seconds")

@@ -1920,7 +1920,7 @@ def plot_graph(
         pcd_df = df[df["input_folder"].isin(camera_folders)]
         if not pcd_df.empty:
             plot_point_clouds(
-                pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols
+                pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols * 2
             )
 
     if dataset_name and experiment_name:
