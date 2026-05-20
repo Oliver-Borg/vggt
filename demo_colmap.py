@@ -17,7 +17,7 @@ import torch
 import torch.nn.functional as F
 import tqdm
 
-from cam_opt import detect_outlier_cameras, optimize_poses
+from cam_opt import detect_outlier_cameras, optimize_poses_with_registration
 from cam_utils import c2w_to_w2c, umeyama_alignment_with_orientation, w2c_to_c2w
 from combine_clouds import save_cameras_json
 from reconstruct_args import SAMPLING_MODE
@@ -42,7 +42,7 @@ from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images_square
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import project_world_points_to_cam, unproject_depth_map_to_point_map
-from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues, uniform_limit_trues
+from vggt.utils.helper import create_pixel_coordinate_grid, fps_limit_trues, randomly_limit_trues, uniform_limit_trues
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
 from vggt.utils.image_utils import np_rgb
@@ -599,13 +599,15 @@ def run_vggt(
     processing_t1 = time.time()
 
     if reconstruct_pose_opt:
-        extrinsic = optimize_poses(
+        opt_extrinsics, depth_maps, valid_masks = optimize_poses_with_registration(
             extrinsic,
             intrinsic,
             depth_map,
             depth_conf,
             images.cpu().numpy(),
+            masks,
         )
+        extrinsic = opt_extrinsics
 
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
     points_3d[masks[..., 0] == 0] = np.nan
@@ -741,6 +743,19 @@ def run_vggt(
             conf_mask = uniform_limit_trues(
                 conf_mask, max_points_for_colmap, points_3d, depth_conf, min_grid_occupancy=3
             )
+        elif sampling_mode == "fps":
+            conf_mask = fps_limit_trues(conf_mask, max_points_for_colmap, points_3d)
+        elif sampling_mode == "imagefps":
+            total_points = conf_mask.sum()
+            # Loop over each mask and perform fps in each mask proportional to how many points are left
+            for i in tqdm.tqdm(range(num_frames)):
+                mask = conf_mask[i]
+                mask_points = mask.sum()
+                points_to_sample = int(max_points_for_colmap * mask_points / total_points)
+                if points_to_sample == 0:
+                    continue
+                conf_mask[i] = fps_limit_trues(mask, points_to_sample, points_3d[i])
+
 
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]

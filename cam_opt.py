@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import random
+import open3d as o3d
 
 from vggt.utils.geometry import project_world_points_to_cam, unproject_depth_map_to_point_map
 
@@ -72,7 +73,7 @@ def detect_outlier_cameras(
         # Find nearest k cameras (excluding itself)
         distances = np.linalg.norm(translations - translations[i], axis=1)
         # argsort returns indices of sorted distances. [0] is itself (dist=0).
-        nearest_idx = np.argsort(distances)[1: k + 1]
+        nearest_idx = np.argsort(distances)[1 : k + 1]
 
         neighbor_points = []
         neighbor_colors = []
@@ -186,6 +187,155 @@ def axis_angle_to_matrix(axis_angle: torch.Tensor) -> torch.Tensor:
     I = torch.eye(3, device=axis_angle.device).unsqueeze(0)
     R = I + torch.sin(angles).unsqueeze(-1) * K + (1 - torch.cos(angles)).unsqueeze(-1) * torch.bmm(K, K)
     return R
+
+
+def optimize_poses_with_registration(
+    base_extrinsics: np.ndarray,
+    intrinsics: np.ndarray,
+    depth_maps: np.ndarray,
+    depth_conf: np.ndarray,
+    images: np.ndarray,
+    valid_masks: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Args:
+        base_extrinsics (np.ndarray): Batch of camera extrinsic matricse of shape (S, 3, 4)
+        intrinsics (np.ndarray): Batch of camera intrinsic matrices of shape (S, 3, 3)
+        depth_maps (np.ndarray): Batch of depth maps of shape (S, H, W, 1) or (S, H, W)
+        depth_conf (np.ndarray): Batch of depth confidence scores of shape (S, H, W, 1) or (S, H, W)
+        images (np.ndarray): Batch of RGB images of shape (S, H, W, 3) or (S, 3, H, W)
+        valid_masks (np.ndarray): Batch of valid masks of shape (S, H, W) or (S, H, W, 1)
+    Returns optimized poses and depth maps.
+    """
+    S = base_extrinsics.shape[0]
+
+    # 1. Extract 3D points in the global coordinate frame
+    # Assuming this helper returns points of shape (S, H, W, 3)
+    world_points_all = unproject_depth_map_to_point_map(depth_maps, base_extrinsics, intrinsics)
+
+    pcds = []
+    global_extent = 1.0
+    if len(valid_masks.shape) == 4:
+        valid_masks = valid_masks.squeeze(-1)
+
+    if images.ndim == 4 and images.shape[1] == 3 and images.shape[3] != 3:
+        images = images.transpose(0, 2, 3, 1)
+
+    # 2. Build Open3D PointClouds for each view
+    for i in range(S):
+        mask = valid_masks[i].astype(bool)
+
+        pts = world_points_all[i][mask]
+        colors = images[i][mask]
+        confs = depth_conf[i].squeeze()[mask] if depth_conf is not None else None
+
+        if len(pts) == 0:
+            pcds.append(o3d.geometry.PointCloud())
+            continue
+
+        max_pts = 10000
+        if len(pts) > max_pts:
+            if confs is not None:
+                # Use argpartition to efficiently get the indices of the top max_pts confidences in O(N) time
+                idx = np.argpartition(confs, -max_pts)[-max_pts:]
+            else:
+                idx = np.random.choice(len(pts), max_pts, replace=False)
+
+            pts = pts[idx]
+            colors = colors[idx]
+
+        if i == 0:
+            global_extent = np.percentile(pts, 99, axis=0).max() - np.percentile(pts, 1, axis=0).min()
+        voxel_size = max(global_extent / 100.0, 1e-4)
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pts)
+
+        # Normalize RGB to [0, 1] for Open3D
+        c_norm = colors.astype(np.float64) / 255.0 if colors.max() > 1.0 else colors
+        pcd.colors = o3d.utility.Vector3dVector(c_norm)
+
+        # Downsample and estimate normals for Point-to-Plane ICP
+        pcd_down = pcd.voxel_down_sample(voxel_size=voxel_size)
+        pcd_down.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2, max_nn=30))
+        pcds.append(pcd_down)
+
+    # 3. Construct the Pose Graph
+    pose_graph = o3d.pipelines.registration.PoseGraph()
+    pose_graph.nodes.append(o3d.pipelines.registration.PoseGraphNode(np.eye(4)))
+
+    max_corr_dist = max(global_extent / 30.0, 1e-3)
+
+    for i in range(S):
+        if i > 0:
+            # Initialize nodes at identity since our point clouds are already in world space
+            pose_graph.nodes.append(o3d.pipelines.registration.PoseGraphNode(np.eye(4)))
+
+        for j in range(i + 1, S):
+            if len(pcds[i].points) < 100 or len(pcds[j].points) < 100:
+                continue
+
+            try:
+                # Colored ICP between pairs
+                icp_result = o3d.pipelines.registration.registration_colored_icp(
+                    pcds[i],
+                    pcds[j],
+                    max_corr_dist,
+                    np.eye(4),
+                    o3d.pipelines.registration.TransformationEstimationForColoredICP(),
+                    o3d.pipelines.registration.ICPConvergenceCriteria(
+                        relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=50
+                    ),
+                )
+            except RuntimeError:
+                continue  # Skip this pair and move to the next if no overlap is found
+
+            # If alignment is decent (e.g., >30% overlap), add an edge
+            if icp_result.fitness > 0.3:
+                info_matrix = o3d.pipelines.registration.get_information_matrix_from_point_clouds(
+                    pcds[i], pcds[j], max_corr_dist, icp_result.transformation
+                )
+
+                # Flag sequential frames as reliable (odometry), others as uncertain (loop closure)
+                is_uncertain = j != i + 1
+
+                pose_graph.edges.append(
+                    o3d.pipelines.registration.PoseGraphEdge(
+                        i, j, icp_result.transformation, info_matrix, uncertain=is_uncertain
+                    )
+                )
+
+    # 4. Global Optimization
+    option = o3d.pipelines.registration.GlobalOptimizationOption(
+        max_correspondence_distance=max_corr_dist, edge_prune_threshold=0.25, reference_node=0
+    )
+
+    o3d.pipelines.registration.global_optimization(
+        pose_graph,
+        o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
+        o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
+        option,
+    )
+
+    # 5. Apply the optimized deltas back to the original extrinsics
+    opt_extrinsics = np.zeros_like(base_extrinsics)
+    for i in range(S):
+        # delta_T maps the original world space to the globally optimized world space
+        delta_T = pose_graph.nodes[i].pose
+        delta_T_inv = np.linalg.inv(delta_T)
+
+        # Assumption: base_extrinsics are World-to-Camera (W2C) matrices (standard CV).
+        # E_new * X_new = E_old * X_old -> E_new * (delta_T * X_old) = E_old * X_old
+        # Therefore, E_new = E_old * delta_T_inv
+        # (If your pipeline uses C2W matrices, swap this to E_new = delta_T @ E_old)
+        E_old = np.eye(4)
+        E_old[:3, :4] = base_extrinsics[i]
+
+        E_new = E_old @ delta_T_inv
+        opt_extrinsics[i] = E_new[:3, :4]
+
+    # Return optimized extrinsics alongside the original maps.
+    return opt_extrinsics, depth_maps, valid_masks
 
 
 def optimize_poses(

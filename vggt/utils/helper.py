@@ -8,6 +8,49 @@ import math
 
 import numpy as np
 
+import torch
+from torch_cluster import fps
+
+
+def fps_limit_trues(mask: np.ndarray, max_trues: int, points: np.ndarray) -> np.ndarray:
+    """
+    If mask has more than max_trues True values,
+    use GPU-accelerated Farthest Point Sampling (via torch_cluster) to keep exactly max_trues of them and set the rest to False.
+    """
+    # 1D positions of all True entries
+    true_indices = np.flatnonzero(mask)  # shape = (N_true,)
+
+    # if already within budget, return as-is
+    if true_indices.size <= max_trues:
+        return mask
+
+    # Flatten the spatial dimensions of points to match flatnonzero, keeping the coordinate dim
+    valid_points = points.reshape(-1, points.shape[-1])[true_indices]
+
+    valid_points_tensor = torch.from_numpy(valid_points).float()
+
+    if torch.cuda.is_available():
+        valid_points_tensor = valid_points_tensor.cuda()
+
+    # fps takes a ratio (0 to 1) instead of an absolute integer K
+    sampling_ratio = max_trues / valid_points.shape[0]
+
+    # Returns the indices of the sampled points directly
+    sampled_idx_tensor = fps(valid_points_tensor, ratio=sampling_ratio, random_start=True)
+
+    # Squeeze out the exact number requested (in case of floating point rounding)
+    fps_idx = sampled_idx_tensor[:max_trues].cpu().numpy()
+
+    # Map the valid_points indices back to the global true_indices
+    sampled_indices = true_indices[fps_idx]
+
+    # build new flat mask: True only at sampled positions
+    limited_flat_mask = np.zeros(mask.size, dtype=bool)
+    limited_flat_mask[sampled_indices] = True
+
+    # restore original shape
+    return limited_flat_mask.reshape(mask.shape)
+
 
 def randomly_limit_trues(mask: np.ndarray, max_trues: int, depth_conf: np.ndarray | None = None) -> np.ndarray:
     """
@@ -20,7 +63,7 @@ def randomly_limit_trues(mask: np.ndarray, max_trues: int, depth_conf: np.ndarra
     # if already within budget, return as-is
     if true_indices.size <= max_trues:
         return mask
-    
+
     if depth_conf is not None:
         true_ind_depths = depth_conf.flatten()[true_indices]
         true_ind_depths -= float(true_ind_depths.min())
@@ -91,10 +134,16 @@ def uniform_limit_trues(
     while iters < 10 and lower_grid_size < upper_grid_size:
         # Cast to uint64 to prevent overflow when grid_size is large
         disc_points = (norm_points * grid_size).round().astype(np.uint64)
-        flat_voxel_inds = disc_points[:, 0] * (np.uint64(grid_size) ** 2) + disc_points[:, 1] * np.uint64(grid_size) + disc_points[:, 2]
+        flat_voxel_inds = (
+            disc_points[:, 0] * (np.uint64(grid_size) ** 2)
+            + disc_points[:, 1] * np.uint64(grid_size)
+            + disc_points[:, 2]
+        )
         unique_flat_voxel_inds, counts = np.unique(flat_voxel_inds, return_counts=True)
         min_grid_occupancy = int(math.ceil(counts.mean()))
-        cur_size = np.count_nonzero(counts >= min_grid_occupancy)  # Only keep voxels that have >= min_grid_occupancy points
+        cur_size = np.count_nonzero(
+            counts >= min_grid_occupancy
+        )  # Only keep voxels that have >= min_grid_occupancy points
         # cur_size = unique_flat_voxel_inds.size
 
         if cur_size == max_trues:
@@ -119,7 +168,9 @@ def uniform_limit_trues(
     grid_size = best_grid_size
     # Cast to uint64 here as well
     disc_points = (norm_points * grid_size).round().astype(np.uint64)
-    flat_voxel_inds = disc_points[:, 0] * (np.uint64(grid_size) ** 2) + disc_points[:, 1] * np.uint64(grid_size) + disc_points[:, 2]
+    flat_voxel_inds = (
+        disc_points[:, 0] * (np.uint64(grid_size) ** 2) + disc_points[:, 1] * np.uint64(grid_size) + disc_points[:, 2]
+    )
     unique_flat_voxel_inds, counts = np.unique(flat_voxel_inds, return_counts=True)
 
     # We can then sample the highest confidence point within each

@@ -694,6 +694,8 @@ if __name__ == "__main__":
     single_parser.add_argument(
         "--optimisation_neighbourhood", type=int, default=10, help="Size of neighbourhood for optimisation"
     )
+    single_parser.add_argument("--near_filtering_strength", type=float, default=0.0, help="Near filtering strength")
+    single_parser.add_argument("--near_filtering_quorum", type=int, default=1, help="Near filtering quorum")
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(
