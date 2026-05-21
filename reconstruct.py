@@ -21,7 +21,18 @@ from pycolmap_utils import get_poses
 from check_sparse import check_sparse_folder
 from combine_clouds import align_to_world_space, load_cameras, load_point_cloud, load_point_clouds, save_cameras_json
 from demo_colmap import VGGTProfiling, run_vggt
-from reconstruct_args import CAMERA_TYPE, COLMAP, COLMAP_MODE, COPY_MODE, IMAGE_MODE, SAMPLING_MODE, ReconstructArgs
+from reconstruct_args import (
+    CAMERA_TYPE,
+    COLMAP,
+    COLMAP_MODE,
+    COPY_MODE,
+    FEATURE_EXTRACTOR,
+    IMAGE_MODE,
+    SAMPLING_MODE,
+    ReconstructArgs,
+)
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 class GPUMonitor(threading.Thread):
@@ -183,12 +194,13 @@ def run_vggt_pipeline(
     save_conf_as_errors: bool = False,
     shared_camera: bool = False,
     use_ba: bool = False,
-    max_ba_iterations: int = 50,
+    max_ba_iterations: int = 100,
     near_filtering_strength: float = 0.0,
     near_filtering_quorum: int = 1,
     reconstruct_pose_opt: bool = False,
     optimisation_iterations: int = 0,
     optimisation_neighbourhood: int = 10,
+    feature_extractor: str = "aliked+sp",
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
@@ -208,6 +220,7 @@ def run_vggt_pipeline(
         reconstruct_pose_opt=reconstruct_pose_opt,
         optimisation_iterations=optimisation_iterations,
         optimisation_neighbourhood=optimisation_neighbourhood,
+        feature_extractor=feature_extractor,
     )
 
 
@@ -594,6 +607,7 @@ def run_reconstruction(
             reconstruct_pose_opt=args.reconstruct_pose_opt,
             optimisation_iterations=args.optimisation_iterations,
             optimisation_neighbourhood=args.optimisation_neighbourhood,
+            feature_extractor=args.feature_extractor,
         )
     else:
         raise ValueError("Invalid choice")
@@ -696,6 +710,13 @@ if __name__ == "__main__":
     )
     single_parser.add_argument("--near_filtering_strength", type=float, default=0.0, help="Near filtering strength")
     single_parser.add_argument("--near_filtering_quorum", type=int, default=1, help="Near filtering quorum")
+    single_parser.add_argument(
+        "--feature_extractor",
+        type=str,
+        default="aliked+sp",
+        help="Feature extractors to use",
+        choices=list(get_args(FEATURE_EXTRACTOR)),
+    )
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(

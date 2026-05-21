@@ -81,6 +81,9 @@ def parse_args():
     parser.add_argument(
         "--optimisation_neighbourhood", type=int, default=10, help="Size of neighbourhood for optimisation"
     )
+    parser.add_argument(
+        "--feature_extractor", type=str, default="aliked+sp", help="Feature extractor to use (e.g., sift, aliked+sp)"
+    )
     return parser.parse_args()
 
 
@@ -146,6 +149,7 @@ def demo_fn(args):
         reconstruct_pose_opt=args.reconstruct_pose_opt,
         optimisation_iterations=args.optimisation_iterations,
         optimisation_neighbourhood=args.optimisation_neighbourhood,
+        feature_extractor=args.feature_extractor,
     )
 
 
@@ -196,6 +200,8 @@ def load_model() -> VGGT:
 def predict_tracks_with_cache(
     images, conf, points_3d, masks, max_query_pts, query_frame_num, keypoint_extractor, fine_tracking, cache_dir, device
 ):
+    if cache_dir is not None:
+        os.makedirs(cache_dir, exist_ok=True)
     track_cache_file = os.path.join(cache_dir, "tracks.pt")
     track_config_file = os.path.join(cache_dir, "tracks_config.json")
 
@@ -358,8 +364,8 @@ def run_vggt(
     shared_camera: bool = True,
     camera_type: str = "SIMPLE_PINHOLE",
     vis_thresh: float = 0.2,
-    query_frame_num: int = 8,
-    max_query_pts: int = 4096,
+    query_frame_num: int = 30,
+    max_query_pts: int = 512,
     fine_tracking: bool = True,
     conf_thres_value: float = 5.0,
     num_profiling_runs: int = 0,
@@ -368,12 +374,13 @@ def run_vggt(
     model: VGGT | None = None,
     cache_dir: str | None = None,
     save_conf_as_errors: bool = False,
-    max_ba_iterations: int = 50,
+    max_ba_iterations: int = 100,
     near_filtering_strength: float = 0.0,
     near_filtering_quorum: int = 2,
     reconstruct_pose_opt: bool = False,
     optimisation_iterations: int = 0,
     optimisation_neighbourhood: int = 10,
+    feature_extractor: str = "aliked+sp",
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -403,6 +410,7 @@ def run_vggt(
             "reconstruct_pose_opt": reconstruct_pose_opt,
             "optimisation_iterations": optimisation_iterations,
             "optimisation_neighbourhood": optimisation_neighbourhood,
+            "feature_extractor": feature_extractor,
         },
     )
 
@@ -634,6 +642,18 @@ def run_vggt(
 
             # You can also change the pred_tracks to tracks from any other methods
             # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
+
+            track_cache_parts = []
+            if cache_dir:
+                track_cache_parts = [
+                    f"mqp{max_query_pts}",
+                    f"qfn{query_frame_num}",
+                    f"fe{feature_extractor}",
+                    f"ft{fine_tracking}",
+                ]
+
+            track_cache_dir = cache_dir.rstrip("/") + "_".join(track_cache_parts) if cache_dir is not None else None
+
             pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb = predict_tracks_with_cache(
                 images,
                 conf=depth_conf,
@@ -641,9 +661,9 @@ def run_vggt(
                 masks=None,
                 max_query_pts=max_query_pts,
                 query_frame_num=query_frame_num,
-                keypoint_extractor="aliked+sp",
+                keypoint_extractor=feature_extractor,
                 fine_tracking=fine_tracking,
-                cache_dir=cache_dir,
+                cache_dir=track_cache_dir,
                 device=device,
             )
 
@@ -681,6 +701,8 @@ def run_vggt(
         )
         ba_options.solver_options.max_num_iterations = max_ba_iterations
         ba_options.solver_options.function_tolerance = 0.0
+        ba_options.solver_options.gradient_tolerance = 0.0
+        ba_options.solver_options.parameter_tolerance = 0.0
         ba_options.solver_options.minimizer_progress_to_stdout = True
         examples = []
         for _ in range(1):

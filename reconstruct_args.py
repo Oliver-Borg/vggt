@@ -8,6 +8,7 @@ CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
 COLMAP_MODE = Literal["default", "relaxed"]  # , "interpolated" TODO
 SAMPLING_MODE = Literal["random", "confidence", "voxels", "none", "ba", "vox3", "fps", "imagefps"]
+FEATURE_EXTRACTOR = Literal["sift", "sp", "aliked", "aliked+sp", "aliked+sp+sift"]
 
 
 @dataclass
@@ -35,6 +36,7 @@ class ReconstructArgs:
     reconstruct_pose_opt: bool = False
     optimisation_iterations: int = 0
     optimisation_neighbourhood: int = 10
+    feature_extractor: FEATURE_EXTRACTOR = "aliked+sp"
 
     def __post_init__(self):
         self.name = self.name.strip("/")
@@ -79,6 +81,7 @@ class ReconstructArgs:
         if self.choice == "vggt":
             if self.sampling_mode == "ba" or self.use_ba:
                 parts.append(self.camera_type.lower().replace("simple_", "m"))
+                parts.append(self.feature_extractor.replace("+", "-"))
             if self.sampling_mode != "ba":
                 parts.extend(
                     [
