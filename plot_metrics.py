@@ -91,6 +91,7 @@ class Param:
     pattern: str
     cast: type[float | str | int] | Callable[[str], float | str | int]
     default: float | str | int | None = None
+    skip_match: bool = False
 
 
 regexes = [
@@ -180,6 +181,7 @@ regexes = [
         default="",
     ),
     Param(name="choice", pattern=r"(vggt)|(colmap)|(gt)_outputs", cast=str),
+    Param(name="dataset", pattern=r"(?!)", cast=str, default="", skip_match=True),
     Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
     Param(name="copy_mode", pattern=r"_(crop)|(tiles)|(square)", cast=str, default=None),
     Param(name="val_step", pattern=r"val_step(\d+)", cast=int, default=None),
@@ -268,6 +270,8 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
     """Extracts parameters from a folder name using regex."""
     params: dict[str, str | float | int | None] = {}
     for p in regexes:
+        if p.skip_match:
+            continue
         if match := re.search(p.pattern, folder_name):
             params[p.name] = p.cast([g for g in match.groups() if g is not None][0])
         else:
@@ -276,14 +280,21 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
 
 
 def load_metrics_to_df(
-    scene_name: str,
+    scene_name: str | list[str],
     methods: list[str],
     folders: list[tuple[str, str]] | None = None,
     val_steps: list[int] = [7000],
 ) -> pd.DataFrame:
     """
     Loads both SfM and gsplat metrics for all methods into a single DataFrame.
+    Accepts a single scene name or a list of scene names.
     """
+    # Normalize scene_name to a list
+    if isinstance(scene_name, str):
+        scene_names = [scene_name]
+    else:
+        scene_names = scene_name
+
     records: dict[int | tuple[str, str], dict] = {}
     sfm_folders = [pair[0] for pair in folders] if folders is not None else []
     gsplat_folders = [pair[1] for pair in folders] if folders is not None else []
@@ -311,75 +322,80 @@ def load_metrics_to_df(
     ]
     i = 0
 
-    for method in methods:
-        for source_name, path_template, parser, source_folders in sources:
-            pattern = path_template.format(method=method, scene=scene_name)
+    for scene_name in scene_names:
+        for method in methods:
+            for source_name, path_template, parser, source_folders in sources:
+                pattern = path_template.format(method=method, scene=scene_name)
 
-            for file_path in glob.glob(pattern):
-                try:
-                    # Extract folder parameters
-                    # We assume folder structure is consistent, getting the folder name relative to the file
-                    folder_path = os.path.dirname(file_path)
-                    folder_name = os.path.basename(folder_path)
+                for file_path in glob.glob(pattern):
+                    try:
+                        # Extract folder parameters
+                        # We assume folder structure is consistent, getting the folder name relative to the file
+                        folder_path = os.path.dirname(file_path)
+                        folder_name = os.path.basename(folder_path)
 
-                    folder_overlap: set[str] = set(source_folders) & set(Path(file_path).parts)
+                        folder_overlap: set[str] = set(source_folders) & set(Path(file_path).parts)
 
-                    if folders is not None and len(folder_overlap) == 0:
+                        if folders is not None and len(folder_overlap) == 0:
+                            continue
+
+                        source_folder = folder_overlap.pop() if folders is not None else folder_name
+
+                        if folders is not None and source_folder in source_folders:
+                            index = source_folders.index(source_folder)
+                            key = folders[index]
+                        else:
+                            key = (str(i), str(i))
+
+                        # For gsplat, the folder is 3 levels up from the json file in the original code logic
+                        if source_name == "gsplat":
+                            folder_name = file_path.split("/")[-3]
+                            key = (key[0], key[1] + "_" + Path(pattern).name)
+
+                        params = extract_params(file_path)
+                        if params["num_images"] is None:
+                            continue
+
+                        # Load and parse metrics
+                        with open(file_path, "r") as f:
+                            data = json.load(f)
+
+                        metrics = parser(data, file_path)
+
+                        if "val_step" in metrics:
+                            metrics["val_step"] += 1
+
+                        # Construct record
+                        record = {
+                            "method": method,
+                            "source": source_name,
+                            "dataset": "".join([c for c in scene_name.replace("_", " ") if not c.isnumeric()]).strip()
+                        }
+                        record.update(params)
+                        record.update(metrics)
+                        record["file_path"] = file_path
+                        record[f"{source_name}_file_path"] = file_path
+                        record["folder"] = folder_name
+                        if source_name == "gsplat":
+                            records[key] = record
+                        else:
+                            updated = False
+                            for sfm_folder, gsplat_folder in folders or []:
+                                if sfm_folder == source_folder:
+                                    for step in val_steps:
+                                        key1 = (sfm_folder, gsplat_folder + f"_val_step{step - 1}.json")
+                                        if key1 in records:
+                                            records[key1].update(metrics)
+                                            records[key1][f"{source_name}_file_path"] = file_path
+                                            updated = True
+
+                            # If no corresponding gsplat record exists, save sfm as a standalone record
+                            # TODO Get this to work properly without creating orphaned series
+                            if not updated:
+                                records[(folder_name, "")] = record
+
+                    except (ValueError, IndexError, KeyError, json.JSONDecodeError):
                         continue
-
-                    source_folder = folder_overlap.pop() if folders is not None else folder_name
-
-                    if folders is not None and source_folder in source_folders:
-                        index = source_folders.index(source_folder)
-                        key = folders[index]
-                    else:
-                        key = (str(i), str(i))
-
-                    # For gsplat, the folder is 3 levels up from the json file in the original code logic
-                    if source_name == "gsplat":
-                        folder_name = file_path.split("/")[-3]
-                        key = (key[0], key[1] + "_" + Path(pattern).name)
-
-                    params = extract_params(file_path)
-                    if params["num_images"] is None:
-                        continue
-
-                    # Load and parse metrics
-                    with open(file_path, "r") as f:
-                        data = json.load(f)
-
-                    metrics = parser(data, file_path)
-
-                    if "val_step" in metrics:
-                        metrics["val_step"] += 1
-
-                    # Construct record
-                    record = {"method": method, "source": source_name}
-                    record.update(params)
-                    record.update(metrics)
-                    record["file_path"] = file_path
-                    record[f"{source_name}_file_path"] = file_path
-                    record["folder"] = folder_name
-                    if source_name == "gsplat":
-                        records[key] = record
-                    else:
-                        updated = False
-                        for sfm_folder, gsplat_folder in folders or []:
-                            if sfm_folder == source_folder:
-                                for step in val_steps:
-                                    key1 = (sfm_folder, gsplat_folder + f"_val_step{step - 1}.json")
-                                    if key1 in records:
-                                        records[key1].update(metrics)
-                                        records[key1][f"{source_name}_file_path"] = file_path
-                                        updated = True
-
-                        # If no corresponding gsplat record exists, save sfm as a standalone record
-                        # TODO Get this to work properly without creating orphaned series
-                        if not updated:
-                            records[(folder_name, "")] = record
-
-                except (ValueError, IndexError, KeyError, json.JSONDecodeError):
-                    continue
 
     records_list = []
     for k, v in records.items():
@@ -945,13 +961,7 @@ def main():
     plot_graph(args.name, "default", args.x_axis, args.split_param, args.filter, title=args.title)
 
 
-def save_figure_tex(
-    tex_out_file: str,
-    pdf_path: str,
-    caption: str,
-    label: str,
-    fig_width: float = 1.0
-):
+def save_figure_tex(tex_out_file: str, pdf_path: str, caption: str, label: str, fig_width: float = 1.0):
     """
     Generates a LaTeX figure block and saves it to a specified .tex file.
     """
@@ -1163,6 +1173,19 @@ def add_text_to_image(
     return new_img
 
 
+def resize_with_padding(im: Image.Image, width: int, height: int):
+    w, h = im.size
+    h_ratio = height / h
+    w_ratio = width / w
+    ratio = min(h_ratio, w_ratio)
+    new_h = int(h * ratio)
+    new_w = int(w * ratio)
+    im = im.resize((new_w, new_h))
+    new_im = Image.new("RGB", (width, height), (0, 0, 0))
+    new_im.paste(im, ((width - new_w) // 2, (height - new_h) // 2))
+    return new_im
+
+
 def _process_single_render(
     row: dict,
     render_src_dir: Path,
@@ -1172,6 +1195,8 @@ def _process_single_render(
     show_depth: bool = False,
     show_gt: bool = False,
     render_num: int = 0,
+    image_width: int = 1200,
+    image_height: int = 800,
 ):
     images = []
     # Grab only the first image for this validation step
@@ -1234,10 +1259,7 @@ def _process_single_render(
         # pred_img.paste(gt_cropped, (w // 2, 0))
 
         if show_gt:
-            w, h = gt_img.size
-            image_width = 1200
-            image_height = int(image_width * h / w)
-            gt_img = gt_img.resize((image_width, image_height))
+            gt_img = resize_with_padding(gt_img, image_width, image_height)
             gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
             images.append(gt_img)
             return images
@@ -1295,10 +1317,7 @@ def _process_single_render(
 
         label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
 
-        w, h = pred_img.size
-        image_width = 1200
-        image_height = int(image_width * h / w)
-        pred_img = pred_img.resize((image_width, image_height))
+        pred_img = resize_with_padding(pred_img, image_width, image_height)
         pred_img = add_text_to_image(pred_img, label_text, 48)
         images.append(pred_img)
 
@@ -1347,20 +1366,43 @@ def create_render_figure(
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
 
-    images_to_stack = []
+    dataset_columns = []
 
-    df = df.copy()
-    for i, (idx, row) in enumerate(df.iterrows()):
-        file_path = row.get("file_path", "")
-        if not file_path or pd.isna(file_path):
-            continue
+    unique_datasets = df["dataset"].unique().tolist()
 
-        p = Path(file_path)
-        if "stats" in p.parts and "val_step" in p.name:
-            render_src_dir = p.parents[1] / "renders"
-            if render_src_dir.exists():
-                folder_name = p.parents[1].name
-                if i == 0 and show_gt:
+    if len(unique_datasets) > 1:
+        max_cols = len(unique_datasets)
+
+    image_width = 1200
+    image_height = 800 if any({"bicycle", "bonsai"} & set(unique_datasets)) else 1200
+
+    for dataset in unique_datasets:
+        dataset_df = df[df["dataset"] == dataset]
+        images_to_stack = []
+        for i, (idx, row) in enumerate(dataset_df.iterrows()):
+            file_path = row.get("file_path", "")
+            if not file_path or pd.isna(file_path):
+                continue
+            p = Path(file_path)
+            if "stats" in p.parts and "val_step" in p.name:
+                render_src_dir = p.parents[1] / "renders"
+                if render_src_dir.exists():
+                    folder_name = p.parents[1].name
+                    if i == 0 and show_gt:
+                        for render_num in render_nums:
+                            processed_images = _process_single_render(
+                                row,
+                                render_src_dir,
+                                p,
+                                folder_name,
+                                x_axis,
+                                show_depth,
+                                True,
+                                render_num,
+                                image_width,
+                                image_height,
+                            )
+                            images_to_stack.extend(processed_images)
                     for render_num in render_nums:
                         processed_images = _process_single_render(
                             row,
@@ -1369,61 +1411,54 @@ def create_render_figure(
                             folder_name,
                             x_axis,
                             show_depth,
-                            True,
+                            False,
                             render_num,
+                            image_width,
+                            image_height,
                         )
                         images_to_stack.extend(processed_images)
-                for render_num in render_nums:
-                    processed_images = _process_single_render(
-                        row,
-                        render_src_dir,
-                        p,
-                        folder_name,
-                        x_axis,
-                        show_depth,
-                        False,
-                        render_num,
-                    )
-                    images_to_stack.extend(processed_images)
 
-    if images_to_stack:
-        stacked_img = _stack_images_with_wrap(images_to_stack, max_cols=max_cols)
-
-        out_file = dest_base / "stacked_renders.png"
-        stacked_img.save(out_file)
-        print(f"Saved stacked renders to {out_file}")
-
-        out_pdf = dest_base / "stacked_renders.pdf"
-        stacked_img.save(out_pdf, "PDF", resolution=100.0)
-        print(f"Saved stacked renders PDF to {out_pdf}")
-
-        if dataset_name and experiment_name:
-            latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
-            os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
-
-            latest_render_png = f"{latest_suffix}_renders.png"
-            shutil.copy2(out_file, latest_render_png)
-            print("Latest copy saved:", Path(latest_render_png))
-
-            latest_render_pdf = f"{latest_suffix}_renders.pdf"
-            shutil.copy2(out_pdf, latest_render_pdf)
-            print("Latest copy saved:", Path(latest_render_pdf))
-
-            latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
-            latex_label = (
-                f"fig:renders_{experiment_name}_{dataset_name}"
-                if experiment_name
-                else f"fig:renders_{prefix}_{dataset_name}"
+        if images_to_stack:
+            dataset_columns.append(
+                _stack_images_with_wrap(images_to_stack, max_cols=1 if len(unique_datasets) > 1 else max_cols)
             )
 
-            tex_out_path = str(Path(latest_render_pdf).with_suffix(".tex"))
-            save_figure_tex(
-                tex_out_path,
-                "Images/04-Results/Renders/" + Path(latest_render_pdf).name,
-                caption=latex_caption,
-                label=latex_label,
-            )
-            print("LaTeX figure saved:", Path(tex_out_path))
+    stacked_img = _stack_images_with_wrap(dataset_columns, max_cols=max_cols)
+    out_file = dest_base / "stacked_renders.png"
+    stacked_img.save(out_file)
+    print(f"Saved stacked renders to {out_file}")
+
+    out_pdf = dest_base / "stacked_renders.pdf"
+    stacked_img.save(out_pdf, "PDF", resolution=100.0)
+    print(f"Saved stacked renders PDF to {out_pdf}")
+
+    if dataset_name and experiment_name:
+        latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
+        os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
+
+        latest_render_png = f"{latest_suffix}_renders.png"
+        shutil.copy2(out_file, latest_render_png)
+        print("Latest copy saved:", Path(latest_render_png))
+
+        latest_render_pdf = f"{latest_suffix}_renders.pdf"
+        shutil.copy2(out_pdf, latest_render_pdf)
+        print("Latest copy saved:", Path(latest_render_pdf))
+
+        latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
+        latex_label = (
+            f"fig:renders_{experiment_name}_{dataset_name}"
+            if experiment_name
+            else f"fig:renders_{prefix}_{dataset_name}"
+        )
+
+        tex_out_path = str(Path(latest_render_pdf).with_suffix(".tex"))
+        save_figure_tex(
+            tex_out_path,
+            "Images/04-Results/Renders/" + Path(latest_render_pdf).name,
+            caption=latex_caption,
+            label=latex_label,
+        )
+        print("LaTeX figure saved:", Path(tex_out_path))
 
 
 @profile
@@ -1501,7 +1536,7 @@ def plot_cameras(
 
 @profile
 def plot_graph(
-    name: str,
+    name: str | list[str],
     prefix: str,
     x_axis: str,
     split_param: str | None = None,
@@ -1523,6 +1558,7 @@ def plot_graph(
     create_table: bool = True,
     print_title: bool = False,
     split_choice: bool = False,
+    split_dataset: bool = False,
     max_render_cols: int = 3,
     show_depth: bool = False,
     show_gt: bool = False,
@@ -1533,7 +1569,9 @@ def plot_graph(
     make_pcd_plot: bool = False,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
-
+    original_name = name
+    if isinstance(name, list):
+        name = ",".join(name)
     if df.empty:
         print("No data found.")
         return
@@ -1716,7 +1754,23 @@ def plot_graph(
     metrics_config = [metrics[m] for m in metric_keys if m in metrics]
 
     plot_configs = []
-    if split_choice:
+    if split_choice and split_dataset:
+        # Split both choice and dataset
+        split_col_choice = "choice" if "choice" in df.columns else "method"
+        choices = sorted(df[split_col_choice].dropna().unique().tolist())
+        datasets = sorted(df["dataset"].dropna().unique().tolist()) if "dataset" in df.columns else [None]
+        for choice_val in choices:
+            for dataset_val in datasets:
+                for m_config in metrics_config:
+                    cfg = m_config.copy()
+                    dataset_str = f" - {dataset_val}" if dataset_val else ""
+                    cfg["title"] = f"{cfg['title']} - {choice_val}{dataset_str}"
+                    cfg["choice_val"] = choice_val
+                    cfg["dataset_val"] = dataset_val
+                    cfg["split_choice"] = True
+                    cfg["split_dataset"] = True
+                    plot_configs.append(cfg)
+    elif split_choice:
         split_col = "choice" if "choice" in df.columns else "method"
         choices = sorted(df[split_col].dropna().unique().tolist())
         for choice_val in choices:
@@ -1725,6 +1779,15 @@ def plot_graph(
                 cfg["title"] = f"{cfg['title']} - {choice_val}"
                 cfg["choice_val"] = choice_val
                 cfg["split_col"] = split_col
+                plot_configs.append(cfg)
+    elif split_dataset:
+        datasets = sorted(df["dataset"].dropna().unique().tolist()) if "dataset" in df.columns else [None]
+        for m_config in metrics_config:
+            for dataset_val in datasets:
+                cfg = m_config.copy()
+                dataset_str = str(dataset_val) if dataset_val else "Unknown"
+                cfg["title"] = f"{cfg['title']} - {dataset_str}"
+                cfg["dataset_val"] = dataset_val
                 plot_configs.append(cfg)
     else:
         plot_configs = metrics_config.copy()
@@ -1757,7 +1820,7 @@ def plot_graph(
         hranges_dict = OrderedDict()
 
         if split_choice and "choice_val" in config:
-            split_col = config["split_col"]
+            split_col = config.get("split_col", "choice" if "choice" in df.columns else "method")
             if split_col == "method":
                 plot_df = df[df[split_col] == config["choice_val"]]
             else:
@@ -1765,6 +1828,9 @@ def plot_graph(
                 plot_df = df[
                     (df[split_col] == config["choice_val"]) | (df[split_col].isna() & (df["method"] == "colmap"))
                 ]
+
+        if split_dataset and "dataset_val" in config:
+            plot_df = plot_df[plot_df["dataset"] == config["dataset_val"]]
 
         if x_axis == "conf_thres_value" and not colmap_df.empty:
             plot_df = plot_df[plot_df["method"] != "colmap"]
@@ -1953,9 +2019,7 @@ def plot_graph(
     if camera_folders is not None and make_pcd_plot:
         pcd_df = df[df["input_folder"].isin(camera_folders)]
         if not pcd_df.empty:
-            plot_point_clouds(
-                pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols * 2
-            )
+            plot_point_clouds(pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols * 2)
 
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
@@ -2067,7 +2131,7 @@ def plot_graph(
 
     if create_table:
         plot_table(
-            name=name,
+            name=original_name,
             prefix=prefix,
             x_axis=x_axis,
             split_param=split_param,
@@ -2079,11 +2143,13 @@ def plot_graph(
             metrics=metrics,
             dataset_name=dataset_name,
             experiment_name=experiment_name,
+            split_choice=split_choice,
+            split_dataset=split_dataset,
         )
 
 
 def plot_table(
-    name: str,
+    name: str | list[str],
     prefix: str,
     x_axis: str,
     split_param: str | None = None,
@@ -2095,6 +2161,8 @@ def plot_table(
     metrics: dict[str, dict[str, str]] = {},
     dataset_name: str | None = None,
     experiment_name: str | None = None,
+    split_choice: bool = False,
+    split_dataset: bool = False,
 ):
     dynamic_rounding = False
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
@@ -2112,6 +2180,9 @@ def plot_table(
 
     # Select relevant columns: choice, x_axis, split params, and metrics
     columns_to_include = ["choice"]
+
+    if split_dataset and "dataset" in df.columns:
+        columns_to_include.append("dataset")
 
     if x_axis:
         columns_to_include.append(x_axis)
@@ -2142,12 +2213,21 @@ def plot_table(
         )
 
     # Sort the dataframe
-    sort_cols = ["choice"]
+    sort_cols = []
+    if split_dataset and "dataset" in df_table.columns:
+        sort_cols.append("dataset")
+    if split_choice and "choice" in df_table.columns:
+        sort_cols.append("choice")
+    elif "choice" in df_table.columns and "choice" not in sort_cols:
+        sort_cols.append("choice")
+
     if x_axis and x_axis in df_table.columns:
         sort_cols.append(x_axis)
     sort_cols.extend([c for c in split_cols if c in df_table.columns])
     sort_cols.extend(["method", "seed"])
     sort_cols = [col for col in sort_cols if col in df_table.columns]
+    sort_cols = list(dict.fromkeys(sort_cols))  # Remove any duplicates preserving order
+
     if sort_cols:
         df_table = df_table.sort_values(by=sort_cols)
 
@@ -2163,6 +2243,9 @@ def plot_table(
     rename_map = {}
     if "choice" in df_table.columns:
         rename_map["choice"] = "Choice"
+
+    if "dataset" in df_table.columns:
+        rename_map["dataset"] = "Dataset"
 
     if x_axis and x_axis in df_table.columns:
         rename_map[x_axis] = x_axis.replace("_", " ").title()
@@ -2188,64 +2271,120 @@ def plot_table(
     latex_caption = f"{title} ({str(dataset_name).title()})" if title else f"{prefix} - {dataset_name}"
     latex_label = f"tab:{experiment_name}_{dataset_name}" if experiment_name else f"tab:{prefix}_{dataset_name}"
 
-    # Generate column format string and formatters for LaTeX
+    # Determine split keys for formatting groups
+    split_keys = []
+    if split_dataset and "Dataset" in df_table_renamed.columns:
+        split_keys.append("Dataset")
+    elif split_dataset and "dataset" in df_table_renamed.columns:
+        split_keys.append("dataset")
+
+    if split_choice and "Choice" in df_table_renamed.columns:
+        split_keys.append("Choice")
+    elif split_choice and "choice" in df_table_renamed.columns:
+        split_keys.append("choice")
+
+    if split_keys:
+        configs = df_table_renamed[split_keys].drop_duplicates().to_dict("records")
+    else:
+        configs = [{}]
+
+    # Generate column format string from full df
     column_format = ""
-    formatters = {}
     for col_name in df_table_renamed.columns:
-        col = df_table_renamed[col_name]
-        original_metric_key = inv_rename_map.get(col_name)
-
-        is_metric = original_metric_key and original_metric_key in metrics
-
-        if pd.api.types.is_numeric_dtype(col):
+        if pd.api.types.is_numeric_dtype(df_table_renamed[col_name]):
             column_format += "r"
-
-            best_val, second_best_val = None, None
-
-            if is_metric:
-                metric_info = metrics.get(original_metric_key, {})
-                direction = metric_info.get("direction")
-
-                if direction:
-                    sorted_vals = col.dropna().sort_values(ascending=(direction == "↓")).round(3)
-                    unique_sorted_vals = sorted_vals.unique()
-                    if len(unique_sorted_vals) > 0:
-                        best_val = unique_sorted_vals[0]
-                    if len(unique_sorted_vals) > 1:
-                        second_best_val = unique_sorted_vals[1]
-
-            def create_formatter(is_int, best, second_best):
-                def formatter(x):
-                    if pd.isna(x):
-                        return ""
-                    s = f"{x:d}" if is_int else (f"{x:.3g}" if dynamic_rounding else f"{x:.3f}")
-                    if best is not None and np.isclose(round(x, 3), best):
-                        return f"\\textbf{{{s}}}"
-                    if second_best is not None and np.isclose(round(x, 3), second_best):
-                        return f"\\underline{{{s}}}"
-                    return s
-
-                return formatter
-
-            is_integer = pd.api.types.is_integer_dtype(col)
-            formatters[col_name] = create_formatter(is_integer, best_val, second_best_val)
-
         else:
             column_format += "l"
-            formatters[col_name] = lambda x: str(x) if pd.notna(x) else ""
 
-    # Generate LaTeX table
-    latex_table = df_table_renamed.to_latex(
+    latex_bodies = []
+    for config in configs:
+        mask = pd.Series(True, index=df_table_renamed.index)
+        for k, v in config.items():
+            mask &= df_table_renamed[k] == v
+        sub_df = df_table_renamed[mask].copy()
+
+        # Format sub_df
+        for col_name in sub_df.columns:
+            col = sub_df[col_name]
+            original_metric_key = inv_rename_map.get(col_name)
+            is_metric = original_metric_key and original_metric_key in metrics
+
+            if pd.api.types.is_numeric_dtype(df_table_renamed[col_name]):
+                is_integer = pd.api.types.is_integer_dtype(df_table_renamed[col_name])
+
+                best_val, second_best_val = None, None
+                if is_metric and pd.api.types.is_numeric_dtype(col):
+                    metric_info = metrics.get(original_metric_key, {})
+                    direction = metric_info.get("direction")
+                    if direction:
+                        sorted_vals = col.dropna().sort_values(ascending=(direction == "↓")).round(3)
+                        unique_sorted_vals = sorted_vals.unique()
+                        if len(unique_sorted_vals) > 0:
+                            best_val = unique_sorted_vals[0]
+                        if len(unique_sorted_vals) > 1:
+                            second_best_val = unique_sorted_vals[1]
+
+                formatted_col = []
+                for val in col:
+                    if pd.isna(val):
+                        formatted_col.append("")
+                        continue
+                    s = f"{val:d}" if is_integer else (f"{val:.3g}" if dynamic_rounding else f"{val:.3f}")
+                    if best_val is not None and np.isclose(round(val, 3), best_val):
+                        formatted_col.append(f"\\textbf{{{s}}}")
+                    elif second_best_val is not None and np.isclose(round(val, 3), second_best_val):
+                        formatted_col.append(f"\\underline{{{s}}}")
+                    else:
+                        formatted_col.append(s)
+                sub_df[col_name] = formatted_col
+            else:
+                sub_df[col_name] = col.apply(lambda x: str(x) if pd.notna(x) else "")
+
+        # Get body latex
+        sub_latex = sub_df.to_latex(index=False, header=False, escape=False, na_rep="")
+        body_lines = []
+        for line in sub_latex.splitlines():
+            if line.strip().endswith(r"\\"):
+                body_lines.append(line)
+        latex_bodies.append("\n".join(body_lines))
+
+    # Build full table latex using a dummy df to fetch the header and footer robustly
+    dummy_df = df_table_renamed.head(1).copy()
+    dummy_marker = "DUMMY_ROW_MARKER_12345"
+    dummy_df.iloc[0, 0] = dummy_marker
+    dummy_latex = dummy_df.to_latex(
         index=False,
-        formatters=formatters,
         column_format=column_format,
+        escape=False,
         caption=latex_caption,
         label=latex_label,
-        longtable=False,
-        escape=False,
         position="H",
         na_rep="",
     )
+
+    lines = dummy_latex.splitlines()
+    header_lines = []
+    footer_lines = []
+    found_dummy = False
+
+    for line in lines:
+        if dummy_marker in line:
+            found_dummy = True
+            continue
+        if not found_dummy:
+            header_lines.append(line)
+        else:
+            footer_lines.append(line)
+
+    header_part = "\n".join(header_lines)
+    footer_part = "\n".join(footer_lines)
+
+    rule_cmd = r"\midrule"
+    if r"\midrule" not in header_part and r"\hline" in header_part:
+        rule_cmd = r"\hline"
+
+    joined_bodies = f"\n{rule_cmd}\n".join(latex_bodies)
+    latex_table = f"{header_part}\n{joined_bodies}\n{footer_part}"
 
     latex_table = latex_table.replace("\\begin{tabular}", "\\small\n\\begin{tabular}")
 
