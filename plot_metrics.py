@@ -1362,6 +1362,7 @@ def create_render_figure(
     show_depth: bool = False,
     show_gt: bool = False,
     render_nums: list[int] = [0],
+    stack_dataset_renders_horizontally: bool = True,
 ):
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
@@ -1370,7 +1371,9 @@ def create_render_figure(
 
     unique_datasets = df["dataset"].unique().tolist()
 
-    if len(unique_datasets) > 1:
+    cols_per_dataset = max_cols
+    if stack_dataset_renders_horizontally and len(unique_datasets) > 1:
+        cols_per_dataset = 1
         max_cols = len(unique_datasets)
 
     image_width = 1200
@@ -1420,10 +1423,14 @@ def create_render_figure(
 
         if images_to_stack:
             dataset_columns.append(
-                _stack_images_with_wrap(images_to_stack, max_cols=1 if len(unique_datasets) > 1 else max_cols)
+                _stack_images_with_wrap(images_to_stack, max_cols=cols_per_dataset)
             )
 
-    stacked_img = _stack_images_with_wrap(dataset_columns, max_cols=max_cols)
+    if stack_dataset_renders_horizontally:
+        stacked_img = _stack_images_with_wrap(dataset_columns, max_cols=max_cols)
+    else:
+        stacked_img = _stack_images_with_wrap(dataset_columns, max_cols=1)
+
     out_file = dest_base / "stacked_renders.png"
     stacked_img.save(out_file)
     print(f"Saved stacked renders to {out_file}")
@@ -1567,6 +1574,7 @@ def plot_graph(
     shared_colors: bool = True,
     make_camera_plot: bool = False,
     make_pcd_plot: bool = False,
+    stack_dataset_renders_horizontally: bool = True,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
     original_name = name
@@ -2008,6 +2016,7 @@ def plot_graph(
                 show_depth=show_depth,
                 show_gt=show_gt,
                 render_nums=render_nums,
+                stack_dataset_renders_horizontally=stack_dataset_renders_horizontally,
             )
     if camera_folders is not None and make_camera_plot:
         camera_df = df[df["input_folder"].isin(camera_folders)]
