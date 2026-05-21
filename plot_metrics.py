@@ -98,7 +98,9 @@ regexes = [
     Param(name="seed", pattern=r"_s(\d+)", cast=int),
     Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
     Param(name="num_points", pattern=r"_p(\d+)", cast=int),
-    Param(name="sampling_mode", pattern=r"_(ba)|_(voxels)|_(confidence)|_(random)|_(vox3)", cast=str),
+    Param(
+        name="sampling_mode", pattern=r"_(ba)|_(voxels)|_(confidence)|_(random)|_(vox3)|_(fps)|_(imagefps)", cast=str
+    ),
     Param(name="near_filtering_strength", pattern=r"_nf(\d+\.\d+|\d+)", cast=str),
     Param(name="near_filtering_quorum", pattern=r"_nq(\d+)", cast=int),
     Param(
@@ -226,6 +228,12 @@ regexes = [
         pattern=r"_(useba)",
         cast=lambda x: "Use BA" if x == "useba" else "",
         default=None,
+    ),
+    Param(
+        name="feature_extractor",
+        pattern=r"_(sift)|_(aliked-sp-sift)|_(aliked-sp)",
+        cast=lambda x: x.replace("-", "+"),
+        default="",
     ),
     Param(
         name="max_ba_iterations",
@@ -525,6 +533,7 @@ def plot_metric(
     hatches: Dict[str, str] | None = None,
     single_legend: bool = False,
     plot_raw: bool = False,
+    hue_order: list[str] | None = None,
 ) -> None:
     """
     Generic plotting function using Seaborn.
@@ -555,13 +564,17 @@ def plot_metric(
     df = _df
 
     if not x:
-        hue_order = df[series_col].unique()
+        if hue_order is None:
+            current_hue_order = df[series_col].unique()
+        else:
+            current_hue_order = [h for h in hue_order if h in df[series_col].values]
+
         sns.barplot(
             data=df,
             x=y,
             y=series_col,
             hue=series_col,
-            hue_order=hue_order,
+            hue_order=current_hue_order,
             palette=colors,
             errorbar=("pi", 100),
             capsize=0.05,
@@ -573,8 +586,8 @@ def plot_metric(
 
         if hatches:
             for i, container in enumerate(ax.containers):
-                if i < len(hue_order):
-                    hatch_pattern = hatches.get(hue_order[i], "")
+                if i < len(current_hue_order):
+                    hatch_pattern = hatches.get(current_hue_order[i], "")
                     if hatch_pattern:
                         for patch in container:
                             patch.set_hatch(hatch_pattern)
@@ -618,12 +631,19 @@ def plot_metric(
             else:
                 plot_df[x] = plot_df[x].fillna(0.0).map(rank_map)
 
+        if hue_order is None:
+            current_hue_order = None
+        else:
+            current_hue_order = [h for h in hue_order if h in plot_df[series_col].values]
+
         sns.lineplot(
             data=plot_df,
             x=x,
             y=y,
             hue=series_col,
             style=series_col,
+            hue_order=current_hue_order,
+            style_order=current_hue_order,
             markers=markers,
             dashes=dashes,
             palette=colors,
@@ -640,6 +660,8 @@ def plot_metric(
             y=y,
             hue=series_col,
             style=series_col,
+            hue_order=current_hue_order,
+            style_order=current_hue_order,
             markers=False,
             dashes=dashes,
             palette=colors,
@@ -656,6 +678,8 @@ def plot_metric(
             y=y,
             hue=series_col,
             style=series_col,
+            hue_order=current_hue_order,
+            style_order=current_hue_order,
             markers=False,
             dashes=dashes,
             palette=colors,
@@ -926,6 +950,7 @@ def save_figure_tex(
     pdf_path: str,
     caption: str,
     label: str,
+    fig_width: float = 1.0
 ):
     """
     Generates a LaTeX figure block and saves it to a specified .tex file.
@@ -934,7 +959,7 @@ def save_figure_tex(
     latex_figure = (
         "\\begin{figure}[H]\n"
         "    \\centering\n"
-        f"    \\includegraphics[width=1\\linewidth]{{{pdf_path}}}\n"
+        f"    \\includegraphics[width={fig_width}\\linewidth]{{{pdf_path}}}\n"
         f"    \\caption{{{caption}}}\n"
         f"    \\label{{{label}}}\n"
         "\\end{figure}\n"
@@ -1606,12 +1631,18 @@ def plot_graph(
         "combined": {"marker": "D", "dashes": (1, 1), "hatch": "xxx"},
     }
 
+    # Dynamically select tab10 or tab20 based on variation count
+    num_splits = len(unique_splits)
+    pal_name = "tab10" if num_splits <= 10 else "tab20"
+
     if shared_colors:
-        pal = sns.color_palette("tab10", n_colors=len(unique_splits))
+        pal = sns.color_palette(pal_name, n_colors=num_splits)
         val_to_color = dict(zip(unique_splits, pal))
     else:
-        pal = sns.color_palette("tab10", n_colors=len(unique_series))
-        val_to_color = dict(zip(unique_series, pal))
+        # Prevent interleaving when not shared by grouping the assignments by method first
+        sorted_series = sorted(unique_series, key=lambda x: (x.split(" | ")[0], x))
+        unshared_pal = sns.color_palette("tab10" if len(sorted_series) <= 10 else "tab20", n_colors=len(sorted_series))
+        val_to_color = dict(zip(sorted_series, unshared_pal))
 
     color_map = {}
     marker_map = {}
@@ -1632,7 +1663,9 @@ def plot_graph(
 
         if shared_colors:
             if valid_split_cols:
-                val_str = series.replace(f"{method} | ", "")
+                # Safely split purely on the divider to extract the variation string
+                parts = series.split(" | ", 1)
+                val_str = parts[1] if len(parts) > 1 else parts[0]
                 original_val = next((v for v in unique_splits if str(v) == val_str), None)
                 color_map[series] = val_to_color.get(original_val, "#333333")
             else:
@@ -1706,10 +1739,10 @@ def plot_graph(
     else:
         cols = len(plot_configs) // 3 + (1 if len(plot_configs) % 3 else 0)
         rows = len(plot_configs) // cols + (1 if len(plot_configs) % cols else 0)
+    figwidth = width / 3 * cols
+    height = figwidth / cols * aspect_ratio * rows
 
-    height = width / cols * aspect_ratio * rows
-
-    fig, axes = plt.subplots(rows, cols, figsize=(width, height))
+    fig, axes = plt.subplots(rows, cols, figsize=(figwidth, height))
     if len(plot_configs) == 1:
         axes = [axes]
 
@@ -1770,6 +1803,7 @@ def plot_graph(
             hatches=hatch_map,
             single_legend=single_legend,
             plot_raw=plot_raw,
+            hue_order=unique_series,
         )
 
     if single_legend:
@@ -1802,7 +1836,7 @@ def plot_graph(
             fig_width = fig.get_figwidth()
             max_label_length = max([len(l) for l in labels] + [0])
 
-            estimated_item_width = max_label_length * 0.07 + 0.2
+            estimated_item_width = (max_label_length + 5) * 0.07
             allowed_cols = max(1, int(fig_width / estimated_item_width))
             ncol = min(len(handles), allowed_cols)
 
@@ -1993,6 +2027,7 @@ def plot_graph(
             "Images/04-Results/" + Path(latest_full_pdf).name,
             caption=latex_caption,
             label=latex_label,
+            fig_width=min(1.0, cols / 3),
         )
 
         print("LaTeX figure saved:", Path(str(Path(latest_full_pdf).with_suffix(".tex"))))
@@ -2211,6 +2246,8 @@ def plot_table(
         position="H",
         na_rep="",
     )
+
+    latex_table = latex_table.replace("\\begin{tabular}", "\\small\n\\begin{tabular}")
 
     # Save to file
     suffix = f"plots/{experiment_name}_{dataset_name}_{prefix}"
