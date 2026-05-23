@@ -2001,7 +2001,9 @@ def plot_graph(
         render_out_base = Path(suffix + "_renders")
         # Use render_folders to filter df based on "folder" column
         render_df = df[df["folder"].isin(render_folders)]
-        render_df = render_df[render_df["val_step"] == max(render_df["val_step"])]
+
+        if not render_df.empty:
+            render_df = render_df[render_df["val_step"] == max(render_df["val_step"])]
 
         if not render_df.empty:
             create_render_figure(
