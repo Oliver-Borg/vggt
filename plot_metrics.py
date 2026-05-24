@@ -104,6 +104,17 @@ dataset_collections = {
     "first": ["bicycle", "bonsai", "lego"],
 }
 
+ZOOM_CONFIGS = {
+    "bicycle": [(0.15, (0.6, 0.5)), (0.15, (0.1, 0.2)), (0.15, (0.6, 0.1))],
+    "garden": [(0.15, (0.5, 0.5)), (0.15, (0.2, 0.8)), (0.15, (0.8, 0.2))],
+    "stump": [(0.15, (0.5, 0.5)), (0.15, (0.3, 0.3)), (0.15, (0.7, 0.7))],
+    "lego": [(0.15, (0.5, 0.5)), (0.15, (0.5, 0.25)), (0.15, (0.5, 0.75))],
+    "bonsai": [(0.15, (0.7, 0.5)), (0.15, (0.5, 0.2)), (0.15, (0.5, 0.8))],
+    "kitchen": [(0.15, (0.5, 0.5)), (0.15, (0.4, 0.6)), (0.15, (0.6, 0.4))],
+    "counter": [(0.15, (0.5, 0.5)), (0.15, (0.25, 0.75)), (0.15, (0.75, 0.25))],
+    "default": [(0.15, (0.5, 0.5)), (0.15, (0.25, 0.25)), (0.15, (0.75, 0.75))],
+}
+
 
 @dataclass
 class Param:
@@ -1245,7 +1256,12 @@ def _process_single_render(
     render_num: int = 0,
     image_width: int = 1200,
     image_height: int = 800,
+    show_zoom: bool = False,
+    show_alt_frames: bool = False,
+    dataset_name: str = "default",
 ):
+    from PIL import ImageOps
+
     images = []
     # Grab only the first image for this validation step
     render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg"))) + sorted(
@@ -1260,47 +1276,43 @@ def _process_single_render(
     if not isinstance(raw_metrics, dict):
         raw_metrics = {}
     depth_factors: list[float] = raw_metrics.get("depth_factor", [])
-    depth_l1s: list[float] = raw_metrics.get("depth_l1", [])
     depth_factor = depth_factors[render_num] if depth_factors else None
-    depth_l1 = depth_l1s[render_num] if depth_l1s else None
 
     try:
-        img = Image.open(render).convert("RGB")
-
-        w, h = img.size
-
-        # img is composed of 4 parts.
-        # gt, predicted, difference and blended all horizontally
 
         def divide_img(im: Image.Image, splits: int = 4) -> list[Image.Image]:
             w, h = im.size
             width = w // splits
             height = h
-            images = []
+            imgs = []
             for i in range(splits):
                 left = i * width
                 right = (i + 1) * width
-                images.append(im.crop((left, 0, right, height)))
-            return images
+                imgs.append(im.crop((left, 0, right, height)))
+            return imgs
 
-        if depth_factor is not None:
-            # There is an extra column for depth
-            if w % 7 == 0 and w % 5 != 0:
-                gt_img, pred_img, _, _, depth, _, _ = divide_img(img, splits=7)
+        def load_and_split(r_file, d_factor):
+            img = Image.open(r_file).convert("RGB")
+            w, h = img.size
+            if d_factor is not None:
+                if w % 7 == 0 and w % 5 != 0:
+                    gt_img, pred_img, _, _, depth, _, _ = divide_img(img, splits=7)
+                else:
+                    gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
+                depth = np.array(depth).mean(axis=-1)
+                # depth *= depth_factor
+                # median_depth = np.median(depth[depth > 0]) + 1e-5
+                # depth = depth / median_depth / 10
+                # depth = np.clip(depth, 0.0, 1.0)
+                depth_rgb = np_rgb(depth, "jet")
+                depth_rgb[depth == 0, :] = 0
+                depth = Image.fromarray(depth_rgb)
             else:
-                gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
-            depth = np.array(depth).mean(axis=-1)
-            # depth *= depth_factor
-            # median_depth = np.median(depth[depth > 0]) + 1e-5
-            # depth = depth / median_depth / 10
-            # depth = np.clip(depth, 0.0, 1.0)
-            depth_rgb = np_rgb(depth, "jet")
-            depth_rgb[depth == 0, :] = 0
-            depth = Image.fromarray(depth_rgb)
-        else:
-            gt_img, pred_img, _, _ = divide_img(img, splits=4)
-            depth = None
+                gt_img, pred_img, _, _ = divide_img(img, splits=4)
+                depth = None
+            return gt_img, pred_img, depth
 
+        gt_img, pred_img, depth = load_and_split(render, depth_factor)
         # DEBUGGING
         # w, h = pred_img.size
         # gt_cropped = gt_img.crop((w // 2, 0, w, h))
@@ -1309,6 +1321,9 @@ def _process_single_render(
         if show_gt:
             gt_img = resize_with_padding(gt_img, image_width, image_height)
             gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
+            # Add border and padding
+            gt_img = ImageOps.expand(gt_img, border=4, fill="black")
+            gt_img = ImageOps.expand(gt_img, border=20, fill="white")
             images.append(gt_img)
             return images
 
@@ -1340,24 +1355,10 @@ def _process_single_render(
         if x_axis and pd.notna(row.get(x_axis)):
             config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
-        psnr_values: list[float] = raw_metrics.get("psnr", [])
-        lpips_values: list[float] = raw_metrics.get("lpips", [])
-        ssim_values: list[float] = raw_metrics.get("ssim", [])
-
-        if psnr_values:
-            psnr_val = psnr_values[render_num]
-        else:
-            psnr_val = row.get("psnr")
-
-        if lpips_values:
-            lpips_val = lpips_values[render_num]
-        else:
-            lpips_val = row.get("lpips")
-
-        if ssim_values:
-            ssim_val = ssim_values[render_num]
-        else:
-            ssim_val = row.get("ssim")
+        # Use the aggregated metrics across all frames for the label
+        psnr_val = row.get("psnr")
+        lpips_val = row.get("lpips")
+        ssim_val = row.get("ssim")
 
         psnr_str = f"{psnr_val:.2f}" if pd.notna(psnr_val) else "N/A"
         lpips_str = f"{lpips_val:.4f}" if pd.notna(lpips_val) else "N/A"
@@ -1366,8 +1367,95 @@ def _process_single_render(
         label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
 
         pred_img = resize_with_padding(pred_img, image_width, image_height)
-        pred_img = add_text_to_image(pred_img, label_text, 48)
-        images.append(pred_img)
+
+        c_w = image_width // 3
+        c_h = image_height // 3
+        composite_parts: list[Image.Image] = []
+
+        if show_zoom:
+            z_configs = ZOOM_CONFIGS.get(dataset_name, ZOOM_CONFIGS["default"])
+            z_configs.sort(key=lambda x: x[1][1])  # sort by height
+            clean_pred = pred_img.copy()
+            draw = ImageDraw.Draw(pred_img)
+            zoom_col = Image.new("RGB", (c_w, image_height), (255, 255, 255))
+
+            for i, (w_pct, (cx_pct, cy_pct)) in enumerate(z_configs[:3]):
+                box_w = int(image_width * w_pct)
+                box_h = int(box_w * (c_h / c_w))
+
+                cx = int(image_width * cx_pct)
+                cy = int(image_height * cy_pct)
+
+                left = max(0, cx - box_w // 2)
+                top = max(0, cy - box_h // 2)
+                right = min(image_width, left + box_w)
+                bottom = min(image_height, top + box_h)
+
+                draw.rectangle([left, top, right, bottom], outline="red", width=5)
+
+                crop = clean_pred.crop((left, top, right, bottom))
+
+                # Resize keeping room for a 5-pixel border (10px total width/height)
+                crop = resize_with_padding(crop, c_w - 10, c_h - 10)
+                # Add red border
+                crop = ImageOps.expand(crop, border=5, fill="red")
+
+                zoom_col.paste(crop, (0, i * c_h))
+
+            composite_parts.append(zoom_col)
+
+        composite_parts.append(pred_img)
+
+        if show_alt_frames:
+            alt_col = Image.new("RGB", (c_w, image_height), (255, 255, 255))
+            psnr_vals = raw_metrics.get("psnr", [])
+            ssim_vals = raw_metrics.get("ssim", [])
+            lpips_vals = raw_metrics.get("lpips", [])
+
+            if psnr_vals and ssim_vals and lpips_vals:
+                qualities = [get_quality(p, s, l) for p, s, l in zip(psnr_vals, ssim_vals, lpips_vals)]
+                sorted_idxs = np.argsort(qualities)
+                idxs_to_show = [sorted_idxs[0], sorted_idxs[len(sorted_idxs) // 2], sorted_idxs[-1]]
+                labels = ["Worst", "Median", "Best"]
+
+                for i, (idx, lbl) in enumerate(zip(idxs_to_show, labels)):
+                    if idx < len(render_files):
+                        dfactor = depth_factors[idx] if depth_factors else None
+                        _, alt_pred, alt_depth = load_and_split(render_files[idx], dfactor)
+                        if alt_depth is not None and show_depth:
+                            w, h = alt_pred.size
+                            alt_depth = alt_depth.crop((w // 2, 0, w, h))
+                            alt_pred.paste(alt_depth, (w // 2, 0))
+
+                        # Shrink the image vertically to make room for larger text bounds
+                        alt_pred_small = resize_with_padding(alt_pred, c_w, int(c_h * 0.85))
+                        # Add a larger, more readable text label
+                        alt_pred_labeled = add_text_to_image(alt_pred_small, lbl, 48)
+                        # Finally, re-pad to fit perfectly into the column height
+                        alt_pred_labeled = resize_with_padding(alt_pred_labeled, c_w, c_h)
+
+                        alt_col.paste(alt_pred_labeled, (0, i * c_h))
+            composite_parts.append(alt_col)
+
+        if not show_zoom and not show_alt_frames:
+            final_img = pred_img
+        else:
+            total_w = sum(p.width for p in composite_parts)
+            final_img = Image.new("RGB", (total_w, image_height), (255, 255, 255))
+            curr_x = 0
+            for part in composite_parts:
+                final_img.paste(part, (curr_x, 0))
+                curr_x += part.width
+
+        final_img = add_text_to_image(final_img, label_text, 48)
+
+        # Draw a black border around the configuration
+        final_img = ImageOps.expand(final_img, border=4, fill="black")
+
+        # Add white padding to create spacing between configurations
+        final_img = ImageOps.expand(final_img, border=20, fill="white")
+
+        images.append(final_img)
 
     except Exception as e:
         print(f"Error processing image {render}: {e}")
@@ -1411,6 +1499,8 @@ def create_render_figure(
     show_gt: bool = False,
     render_nums: list[int] = [0],
     stack_dataset_renders_horizontally: bool = True,
+    show_zoom: bool = False,
+    show_alt_frames: bool = False,
 ):
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
@@ -1442,30 +1532,36 @@ def create_render_figure(
                     if i == 0 and show_gt:
                         for render_num in render_nums:
                             processed_images = _process_single_render(
-                                row,
-                                render_src_dir,
-                                p,
-                                folder_name,
-                                x_axis,
-                                show_depth,
-                                True,
-                                render_num,
-                                image_width,
-                                image_height,
+                                row=row,
+                                render_src_dir=render_src_dir,
+                                p=p,
+                                folder_name=folder_name,
+                                x_axis=x_axis,
+                                show_depth=show_depth,
+                                show_gt=True,
+                                render_num=render_num,
+                                image_width=image_width,
+                                image_height=image_height,
+                                show_zoom=show_zoom,
+                                show_alt_frames=show_alt_frames and len(render_nums) == 1,
+                                dataset_name=dataset,
                             )
                             images_to_stack.extend(processed_images)
                     for render_num in render_nums:
                         processed_images = _process_single_render(
-                            row,
-                            render_src_dir,
-                            p,
-                            folder_name,
-                            x_axis,
-                            show_depth,
-                            False,
-                            render_num,
-                            image_width,
-                            image_height,
+                            row=row,
+                            render_src_dir=render_src_dir,
+                            p=p,
+                            folder_name=folder_name,
+                            x_axis=x_axis,
+                            show_depth=show_depth,
+                            show_gt=False,
+                            render_num=render_num,
+                            image_width=image_width,
+                            image_height=image_height,
+                            show_zoom=show_zoom,
+                            show_alt_frames=show_alt_frames and len(render_nums) == 1,
+                            dataset_name=dataset,
                         )
                         images_to_stack.extend(processed_images)
 
@@ -1621,6 +1717,8 @@ def plot_graph(
     make_camera_plot: bool = False,
     make_pcd_plot: bool = False,
     stack_datasets_horizontally: bool = True,
+    show_zoom: bool = True,
+    show_alt_frames: bool = True,
 ):
     if isinstance(split_dataset, bool):
         split_dataset = "individual" if split_dataset else "none"
@@ -2095,6 +2193,8 @@ def plot_graph(
                 show_gt=show_gt,
                 render_nums=render_nums,
                 stack_dataset_renders_horizontally=stack_datasets_horizontally,
+                show_zoom=show_zoom,
+                show_alt_frames=show_alt_frames,
             )
     if camera_folders is not None and make_camera_plot:
         camera_df = df[df["input_folder"].isin(camera_folders)]
