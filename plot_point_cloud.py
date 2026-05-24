@@ -148,7 +148,35 @@ def load_pcd_from_sparse(sparse_dir: Path):
     return None, None, None
 
 
-def _render_o3d_image(xyz: np.ndarray, rgb: np.ndarray, c2w: np.ndarray, K: np.ndarray, W: int, H: int) -> np.ndarray:
+def create_frustum_lines(K: np.ndarray, c2w: np.ndarray, W: int, H: int, scale: float = 1.0):
+    """Creates a line set visualizing a camera frustum."""
+    K_inv = np.linalg.inv(K)
+
+    # Corners in camera frame at z=1
+    corners_c = np.array([[0, 0, 1], [W, 0, 1], [W, H, 1], [0, H, 1]]).T
+    corners_c = K_inv @ corners_c
+    corners_c *= scale
+    corners_c = np.vstack((corners_c, np.ones((1, 4))))
+
+    # Transform to world
+    corners_w = (c2w @ corners_c)[:3, :].T
+    origin = c2w[:3, 3]
+
+    points = np.vstack((origin, corners_w))
+    # 0: origin, 1: top-left, 2: top-right, 3: bottom-right, 4: bottom-left
+    lines = [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [4, 1]]  # rays  # front plane
+    colors = [[1.0, 0.0, 0.0] for _ in range(len(lines))]  # Red
+
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector(points)
+    line_set.lines = o3d.utility.Vector2iVector(lines)
+    line_set.colors = o3d.utility.Vector3dVector(colors)
+    return line_set
+
+
+def _render_o3d_image(
+    xyz: np.ndarray, rgb: np.ndarray, c2w: np.ndarray, K: np.ndarray, W: int, H: int, frustum_line_set=None
+) -> np.ndarray:
     """Helper method to render a point cloud using Open3D from a specific viewpoint."""
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
@@ -168,6 +196,12 @@ def _render_o3d_image(xyz: np.ndarray, rgb: np.ndarray, c2w: np.ndarray, K: np.n
 
     render.scene.add_geometry("pcd", pcd, mat)
 
+    if frustum_line_set is not None:
+        mat_line = o3d.visualization.rendering.MaterialRecord()
+        mat_line.shader = "unlitLine"
+        mat_line.line_width = 3.0
+        render.scene.add_geometry("frustum", frustum_line_set, mat_line)
+
     # Open3D's camera setup expects intrinsics (3x3) and extrinsics (world-to-camera 4x4)
     w2c = np.linalg.inv(c2w)
     render.setup_camera(K, w2c, W, H)
@@ -177,6 +211,8 @@ def _render_o3d_image(xyz: np.ndarray, rgb: np.ndarray, c2w: np.ndarray, K: np.n
 
     # Clean up to prevent EGL context leaks across many renders
     render.scene.remove_geometry("pcd")
+    if frustum_line_set is not None:
+        render.scene.remove_geometry("frustum")
 
     # Image might be returned with an alpha channel depending on the Open3D version,
     # dropping it if present so it matches the expected HxWx3 format
@@ -192,15 +228,16 @@ def plot_point_clouds(
     dest_base: Path,
     x_axis: str | None = None,
     max_cols: int = 5,
-    remove_ceiling: bool = True,
+    remove_ceiling: bool = False,
     view_mode: str = "isometric",
+    draw_frustum: bool = False,
+    stack_dataset_renders_horizontally: bool = True,
 ):
     """Projects point clouds to 2D images using Open3D rendering and Matplotlib."""
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
     df = df.copy()
 
-    configs = []
     point_clouds = []
 
     for i, (idx, row) in enumerate(df.iterrows()):
@@ -222,6 +259,8 @@ def plot_point_clouds(
 
             sparse_dir = p.parent / "sparse"
             xyz, rgb, c2ws = load_pcd_from_sparse(sparse_dir)
+
+            dataset = row.get("dataset", "Unknown")
 
             if xyz is not None and c2ws is not None and len(c2ws) > 0:
                 # 1. Align upward
@@ -279,28 +318,68 @@ def plot_point_clouds(
                     xyz_filtered = None
                     rgb_filtered = None
 
-                configs.append(config_name)
                 point_clouds.append(
-                    (xyz_aligned, rgb, cam_target, cam_max_range, xyz_filtered, rgb_filtered, local_bounds, c1_aligned)
+                    {
+                        "dataset": dataset,
+                        "config_name": config_name,
+                        "xyz_aligned": xyz_aligned,
+                        "rgb": rgb,
+                        "cam_target": cam_target,
+                        "cam_max_range": cam_max_range,
+                        "xyz_filt": xyz_filtered,
+                        "rgb_filt": rgb_filtered,
+                        "local_bounds": local_bounds,
+                        "c1_aligned": c1_aligned,
+                    }
                 )
 
-    if not configs:
+    if not point_clouds:
         print("No point clouds found to plot.")
         return
 
-    num_series = len(configs)
-    cols = min(num_series, max_cols)
-    original_rows = (num_series + cols - 1) // cols
-    multiplier = 3 if remove_ceiling else 2
-    total_rows = original_rows * multiplier
+    # Determine layout groupings (views placed horizontally per configuration)
+    unique_datasets = list(dict.fromkeys([c["dataset"] for c in point_clouds]))
+    views_per_config = 2 + (1 if remove_ceiling else 0)
+
+    if stack_dataset_renders_horizontally and len(unique_datasets) > 1:
+        cols = len(unique_datasets) * views_per_config
+        max_configs = max(sum(1 for c in point_clouds if c["dataset"] == d) for d in unique_datasets)
+        total_rows = max_configs
+
+        grid_positions = []
+        dataset_counts = {d: 0 for d in unique_datasets}
+        for config in point_clouds:
+            d = config["dataset"]
+            dataset_idx = unique_datasets.index(d)
+            row_idx = dataset_counts[d]
+            dataset_counts[d] += 1
+
+            c_base = dataset_idx * views_per_config
+            r_main = row_idx
+            grid_positions.append((r_main, c_base, c_base + 1, c_base + 2 if remove_ceiling else None))
+    else:
+        configs_per_row = max(1, max_cols // views_per_config)
+        cols = configs_per_row * views_per_config
+        total_rows = (len(point_clouds) + configs_per_row - 1) // configs_per_row
+
+        grid_positions = []
+        for i, config in enumerate(point_clouds):
+            row_idx = i // configs_per_row
+            col_idx = i % configs_per_row
+
+            c_base = col_idx * views_per_config
+            r_main = row_idx
+            grid_positions.append((r_main, c_base, c_base + 1, c_base + 2 if remove_ceiling else None))
 
     # Calculate proportional figure height to maintain roughly square subplots
-    fig_height = (width / cols) * total_rows * aspect_ratio
+    fig_height = (width / max(1, cols)) * total_rows * aspect_ratio
 
     fig, axes = plt.subplots(total_rows, cols, figsize=(width, fig_height), dpi=200, squeeze=False)
-    fig.subplots_adjust(wspace=0.05, hspace=0.2)
 
-    # Clean the background for all grid cells (hiding empty ones)
+    # We use very tight wspace/hspace to maximize image space
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.99, bottom=0.05, wspace=0.01, hspace=0.1)
+
+    # Clean the background for all grid cells (hiding empty ones natively)
     for ax in axes.flat:
         ax.set_xticks([])
         ax.set_yticks([])
@@ -319,17 +398,20 @@ def plot_point_clouds(
         dir_vec = dir_vec / np.linalg.norm(dir_vec)
         up_vec = np.array([0.0, 0.0, 1.0])
 
-    print(f"Generating 2D Projections for {num_series} point clouds...")
+    print(f"Generating 2D Projections for {len(point_clouds)} point clouds...")
 
-    for idx, (xyz, rgb, cam_target, cam_max_range, xyz_filt, rgb_filt, local_bounds, c1_aligned) in enumerate(
-        point_clouds
-    ):
-        orig_r = idx // cols
-        c = idx % cols
+    bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="black", lw=0.5, alpha=0.8)
 
-        r_main = orig_r * multiplier
-        r_zoom = orig_r * multiplier + 1
-        r_filt = orig_r * multiplier + 2 if remove_ceiling else None
+    for idx, (config, pos) in enumerate(zip(point_clouds, grid_positions)):
+        r, c_main, c_zoom, c_filt = pos
+
+        xyz = config["xyz_aligned"]
+        rgb = config["rgb"]
+        xyz_filt = config["xyz_filt"]
+        rgb_filt = config["rgb_filt"]
+        local_bounds = config["local_bounds"]
+        c1_aligned = config["c1_aligned"]
+        config_name = config["config_name"]
 
         # Calculate main target and range from local bounds instead of global bounds
         x_min, x_max, y_min, y_max, z_min, z_max = local_bounds
@@ -337,33 +419,39 @@ def plot_point_clouds(
         main_target = np.array([(x_max + x_min) / 2, (y_max + y_min) / 2, (z_max + z_min) / 2])
 
         # Determine camera eye distance based on 800px focal length to fit the requested range
-        # f_view = FOV_distance ~= range * 1.2 padding
         D_main = main_max_range * 1.2
-
         c2w_main = get_lookat_c2w(main_target, main_target + dir_vec * D_main, up=up_vec)
 
         # Render from the perspective of the first camera instead of zoomed look-at
         c2w_zoom = c1_aligned
 
+        frustum_lines = None
+        if draw_frustum:
+            frustum_lines = create_frustum_lines(K, c2w_zoom, W, H, scale=main_max_range * 0.15)
+
         # Fetch configured spine width from rcParams
         spine_width = plt.rcParams.get("axes.linewidth", 0.4)
 
         # Render Main Image
-        img_main = _render_o3d_image(xyz, rgb, c2w_main, K, W, H)
-        ax = axes[r_main, c]
-        ax.imshow(img_main)
-        ax.set_title(configs[idx], pad=10)
-        for spine in ax.spines.values():
+        img_main = _render_o3d_image(xyz, rgb, c2w_main, K, W, H, frustum_line_set=frustum_lines)
+        ax_main = axes[r, c_main]
+        ax_main.imshow(img_main)
+        ax_main.set_xlabel(config_name, fontsize=12, labelpad=2)
+        ax_main.text(0.95, 0.95, "Full", transform=ax_main.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props)
+        for spine in ax_main.spines.values():
             spine.set_visible(True)
             spine.set_color("black")
             spine.set_linewidth(spine_width)
 
         # Render Zoomed Image
         img_zoom = _render_o3d_image(xyz, rgb, c2w_zoom, K, W, H)
-        ax = axes[r_zoom, c]
-        ax.imshow(img_zoom)
-        ax.set_title(f"{configs[idx]}\n(Zoom)", pad=10)
-        for spine in ax.spines.values():
+        ax_zoom = axes[r, c_zoom]
+        ax_zoom.imshow(img_zoom)
+        ax_zoom.set_xlabel(config_name, fontsize=12, labelpad=2)
+        ax_zoom.text(
+            0.95, 0.95, "Zoomed", transform=ax_zoom.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
+        )
+        for spine in ax_zoom.spines.values():
             spine.set_visible(True)
             spine.set_color("black")
             spine.set_linewidth(spine_width)
@@ -371,10 +459,13 @@ def plot_point_clouds(
         # Render Filtered Image (if requested)
         if remove_ceiling and xyz_filt is not None:
             img_filt = _render_o3d_image(xyz_filt, rgb_filt, c2w_main, K, W, H)
-            ax = axes[r_filt, c]
-            ax.imshow(img_filt)
-            ax.set_title(f"{configs[idx]}\n(No Ceiling)", pad=10)
-            for spine in ax.spines.values():
+            ax_filt = axes[r, c_filt]
+            ax_filt.imshow(img_filt)
+            ax_filt.set_xlabel(config_name, fontsize=12, labelpad=2)
+            ax_filt.text(
+                0.95, 0.95, "No Ceiling", transform=ax_filt.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
+            )
+            for spine in ax_filt.spines.values():
                 spine.set_visible(True)
                 spine.set_color("black")
                 spine.set_linewidth(spine_width)
