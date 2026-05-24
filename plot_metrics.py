@@ -1,6 +1,7 @@
 import argparse
 from collections import OrderedDict
 import glob
+import itertools
 import json
 import os
 from pathlib import Path
@@ -28,8 +29,8 @@ plt.style.use(["science", "grid"])
 
 textwidth = 7.00697
 aspect_ratio = 6 / 8
-scale = 1.5
-width = textwidth * scale
+scale = 0.5
+width = textwidth
 height = width * aspect_ratio
 
 plt.rcParams.update(
@@ -295,6 +296,13 @@ def load_metrics_to_df(
     else:
         scene_names = scene_name
 
+    # Extract original dataset order to maintain across all plots/tables
+    dataset_order = []
+    for s_name in scene_names:
+        ds_val = "".join([c for c in s_name.replace("_", " ") if not c.isnumeric()]).strip()
+        if ds_val not in dataset_order:
+            dataset_order.append(ds_val)
+
     records: dict[int | tuple[str, str], dict] = {}
     sfm_folders = [pair[0] for pair in folders] if folders is not None else []
     gsplat_folders = [pair[1] for pair in folders] if folders is not None else []
@@ -369,7 +377,7 @@ def load_metrics_to_df(
                         record = {
                             "method": method,
                             "source": source_name,
-                            "dataset": "".join([c for c in scene_name.replace("_", " ") if not c.isnumeric()]).strip()
+                            "dataset": "".join([c for c in scene_name.replace("_", " ") if not c.isnumeric()]).strip(),
                         }
                         record.update(params)
                         record.update(metrics)
@@ -414,6 +422,8 @@ def load_metrics_to_df(
         return pd.DataFrame()
 
     df = pd.DataFrame(records_list)
+    # Convert 'dataset' to ordered Categorical to implicitly enforce input sorting everywhere
+    df["dataset"] = pd.Categorical(df["dataset"], categories=dataset_order, ordered=True)
 
     # Merge rows that share the same unique identifiers (method, num_images, seed, etc.)
     # Since SfM and GS metrics come from different files but belong to the same run,
@@ -422,7 +432,7 @@ def load_metrics_to_df(
     # Filter only columns that exist to avoid key errors
     valid_group_cols = [c for c in group_cols if c in df.columns]
 
-    df_merged = df.groupby(valid_group_cols, dropna=False).first().reset_index()
+    df_merged = df.groupby(valid_group_cols, dropna=False, observed=True).first().reset_index()
 
     return convert_to_nullable_ints(df_merged)
 
@@ -1422,9 +1432,7 @@ def create_render_figure(
                         images_to_stack.extend(processed_images)
 
         if images_to_stack:
-            dataset_columns.append(
-                _stack_images_with_wrap(images_to_stack, max_cols=cols_per_dataset)
-            )
+            dataset_columns.append(_stack_images_with_wrap(images_to_stack, max_cols=cols_per_dataset))
 
     if stack_dataset_renders_horizontally:
         stacked_img = _stack_images_with_wrap(dataset_columns, max_cols=max_cols)
@@ -1574,7 +1582,7 @@ def plot_graph(
     shared_colors: bool = True,
     make_camera_plot: bool = False,
     make_pcd_plot: bool = False,
-    stack_dataset_renders_horizontally: bool = True,
+    stack_datasets_horizontally: bool = True,
 ):
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
     original_name = name
@@ -1760,24 +1768,32 @@ def plot_graph(
     metrics = {m["y"]: m for m in metrics_config}
 
     metrics_config = [metrics[m] for m in metric_keys if m in metrics]
-
+    datasets = []
     plot_configs = []
+
+    stack_datasets_vertically = not stack_datasets_horizontally
+
     if split_choice and split_dataset:
         # Split both choice and dataset
         split_col_choice = "choice" if "choice" in df.columns else "method"
         choices = sorted(df[split_col_choice].dropna().unique().tolist())
-        datasets = sorted(df["dataset"].dropna().unique().tolist()) if "dataset" in df.columns else [None]
+        datasets = list(dict.fromkeys(df["dataset"].dropna())) if "dataset" in df.columns else [None]
         for choice_val in choices:
-            for dataset_val in datasets:
-                for m_config in metrics_config:
-                    cfg = m_config.copy()
-                    dataset_str = f" - {dataset_val}" if dataset_val else ""
-                    cfg["title"] = f"{cfg['title']} - {choice_val}{dataset_str}"
-                    cfg["choice_val"] = choice_val
-                    cfg["dataset_val"] = dataset_val
-                    cfg["split_choice"] = True
-                    cfg["split_dataset"] = True
-                    plot_configs.append(cfg)
+            iter_product = (
+                itertools.product(datasets, metrics_config)
+                if stack_datasets_vertically
+                else itertools.product(metrics_config, datasets)
+            )
+            for item in iter_product:
+                dataset_val, m_config = item if stack_datasets_vertically else item[::-1]
+                cfg = m_config.copy()
+                dataset_str = f" - {dataset_val}" if dataset_val else ""
+                cfg["title"] = f"{cfg['title']} - {choice_val}{dataset_str}"
+                cfg["choice_val"] = choice_val
+                cfg["dataset_val"] = dataset_val
+                cfg["split_choice"] = True
+                cfg["split_dataset"] = True
+                plot_configs.append(cfg)
     elif split_choice:
         split_col = "choice" if "choice" in df.columns else "method"
         choices = sorted(df[split_col].dropna().unique().tolist())
@@ -1789,14 +1805,19 @@ def plot_graph(
                 cfg["split_col"] = split_col
                 plot_configs.append(cfg)
     elif split_dataset:
-        datasets = sorted(df["dataset"].dropna().unique().tolist()) if "dataset" in df.columns else [None]
-        for m_config in metrics_config:
-            for dataset_val in datasets:
-                cfg = m_config.copy()
-                dataset_str = str(dataset_val) if dataset_val else "Unknown"
-                cfg["title"] = f"{cfg['title']} - {dataset_str}"
-                cfg["dataset_val"] = dataset_val
-                plot_configs.append(cfg)
+        datasets = list(dict.fromkeys(df["dataset"].dropna())) if "dataset" in df.columns else [None]
+        iter_product = (
+            itertools.product(datasets, metrics_config)
+            if stack_datasets_vertically
+            else itertools.product(metrics_config, datasets)
+        )
+        for item in iter_product:
+            dataset_val, m_config = item if stack_datasets_vertically else item[::-1]
+            cfg = m_config.copy()
+            dataset_str = str(dataset_val) if dataset_val else "Unknown"
+            cfg["title"] = f"{cfg['title']} - {dataset_str}"
+            cfg["dataset_val"] = dataset_val
+            plot_configs.append(cfg)
     else:
         plot_configs = metrics_config.copy()
 
@@ -1804,13 +1825,18 @@ def plot_graph(
         print("No metrics/choices to plot.")
         return
 
-    if horizontal:
-        rows = len(plot_configs) // 3 + (1 if len(plot_configs) % 3 else 0)
-        cols = len(plot_configs) // rows + (1 if len(plot_configs) % rows else 0)
-    else:
-        cols = len(plot_configs) // 3 + (1 if len(plot_configs) % 3 else 0)
+    if split_dataset and len(datasets) > 0:
+        cols = len(datasets) if stack_datasets_horizontally else len(metrics_config)
         rows = len(plot_configs) // cols + (1 if len(plot_configs) % cols else 0)
-    figwidth = width / 3 * cols
+    else:
+        if horizontal:
+            rows = len(plot_configs) // 3 + (1 if len(plot_configs) % 3 else 0)
+            cols = len(plot_configs) // rows + (1 if len(plot_configs) % rows else 0)
+        else:
+            cols = len(plot_configs) // 3 + (1 if len(plot_configs) % 3 else 0)
+            rows = len(plot_configs) // cols + (1 if len(plot_configs) % cols else 0)
+
+    figwidth = width * scale * cols
     height = figwidth / cols * aspect_ratio * rows
 
     fig, axes = plt.subplots(rows, cols, figsize=(figwidth, height))
@@ -2018,7 +2044,7 @@ def plot_graph(
                 show_depth=show_depth,
                 show_gt=show_gt,
                 render_nums=render_nums,
-                stack_dataset_renders_horizontally=stack_dataset_renders_horizontally,
+                stack_dataset_renders_horizontally=stack_datasets_horizontally,
             )
     if camera_folders is not None and make_camera_plot:
         camera_df = df[df["input_folder"].isin(camera_folders)]
@@ -2215,7 +2241,7 @@ def plot_table(
 
     # Take the mean of all metrics based on non_metric_cols
     df_for_agg = df[columns_to_include]
-    df_table = df_for_agg.groupby(non_metric_cols, dropna=False).mean().reset_index()
+    df_table = df_for_agg.groupby(non_metric_cols, dropna=False, observed=True).mean().reset_index()
 
     # Format method names for presentation (feature from plot_graph)
     if "choice" in df_table.columns:

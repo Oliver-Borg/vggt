@@ -412,6 +412,7 @@ def plot_point_clouds(
         local_bounds = config["local_bounds"]
         c1_aligned = config["c1_aligned"]
         config_name = config["config_name"]
+        dataset_name = config["dataset"]
 
         # Calculate main target and range from local bounds instead of global bounds
         x_min, x_max, y_min, y_max, z_min, z_max = local_bounds
@@ -437,7 +438,7 @@ def plot_point_clouds(
         ax_main = axes[r, c_main]
         ax_main.imshow(img_main)
         ax_main.set_xlabel(config_name, fontsize=12, labelpad=2)
-        ax_main.text(0.95, 0.95, "Full", transform=ax_main.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props)
+        ax_main.text(0.95, 0.95, f"{dataset_name} - Full", transform=ax_main.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props)
         for spine in ax_main.spines.values():
             spine.set_visible(True)
             spine.set_color("black")
@@ -449,7 +450,7 @@ def plot_point_clouds(
         ax_zoom.imshow(img_zoom)
         ax_zoom.set_xlabel(config_name, fontsize=12, labelpad=2)
         ax_zoom.text(
-            0.95, 0.95, "Zoomed", transform=ax_zoom.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
+            0.95, 0.95, f"{dataset_name} - Zoomed", transform=ax_zoom.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
         )
         for spine in ax_zoom.spines.values():
             spine.set_visible(True)
@@ -463,7 +464,7 @@ def plot_point_clouds(
             ax_filt.imshow(img_filt)
             ax_filt.set_xlabel(config_name, fontsize=12, labelpad=2)
             ax_filt.text(
-                0.95, 0.95, "No Ceiling", transform=ax_filt.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
+                0.95, 0.95, f"{dataset_name} - No Ceiling", transform=ax_filt.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
             )
             for spine in ax_filt.spines.values():
                 spine.set_visible(True)
