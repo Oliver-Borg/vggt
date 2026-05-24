@@ -86,6 +86,25 @@ def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
     return rgba[..., :3]
 
 
+dataset_collections = {
+    "outdoor": ["bicycle", "garden", "stump"],
+    "indoor": ["bonsai", "kitchen", "counter"],
+    "synthetic": [
+        "lego",
+        "ship",
+        "drums",
+        # "chair",
+        # "ficus",
+        # "hotdog",
+        # "materials",
+        # "mic",
+        # "blender_radial",
+        # "blender_pinhole",
+    ],
+    "first": ["bicycle", "bonsai", "lego"],
+}
+
+
 @dataclass
 class Param:
     name: str
@@ -303,6 +322,16 @@ def load_metrics_to_df(
         if ds_val not in dataset_order:
             dataset_order.append(ds_val)
 
+    collection_order = []
+    for ds_val in dataset_order:
+        coll = "other"
+        for k, v in dataset_collections.items():
+            if ds_val in v:
+                coll = k
+                break
+        if coll not in collection_order:
+            collection_order.append(coll)
+
     records: dict[int | tuple[str, str], dict] = {}
     sfm_folders = [pair[0] for pair in folders] if folders is not None else []
     gsplat_folders = [pair[1] for pair in folders] if folders is not None else []
@@ -379,6 +408,14 @@ def load_metrics_to_df(
                             "source": source_name,
                             "dataset": "".join([c for c in scene_name.replace("_", " ") if not c.isnumeric()]).strip(),
                         }
+
+                        coll = "other"
+                        for k, v in dataset_collections.items():
+                            if record["dataset"] in v:
+                                coll = k
+                                break
+                        record["dataset_collection"] = coll
+
                         record.update(params)
                         record.update(metrics)
                         record["file_path"] = file_path
@@ -424,6 +461,7 @@ def load_metrics_to_df(
     df = pd.DataFrame(records_list)
     # Convert 'dataset' to ordered Categorical to implicitly enforce input sorting everywhere
     df["dataset"] = pd.Categorical(df["dataset"], categories=dataset_order, ordered=True)
+    df["dataset_collection"] = pd.Categorical(df["dataset_collection"], categories=collection_order, ordered=True)
 
     # Merge rows that share the same unique identifiers (method, num_images, seed, etc.)
     # Since SfM and GS metrics come from different files but belong to the same run,
@@ -1573,7 +1611,7 @@ def plot_graph(
     create_table: bool = True,
     print_title: bool = False,
     split_choice: bool = False,
-    split_dataset: bool = False,
+    split_dataset: Literal["none", "individual", "collection"] | bool = "none",
     max_render_cols: int = 3,
     show_depth: bool = False,
     show_gt: bool = False,
@@ -1584,6 +1622,9 @@ def plot_graph(
     make_pcd_plot: bool = False,
     stack_datasets_horizontally: bool = True,
 ):
+    if isinstance(split_dataset, bool):
+        split_dataset = "individual" if split_dataset else "none"
+
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
     original_name = name
     if isinstance(name, list):
@@ -1768,16 +1809,23 @@ def plot_graph(
     metrics = {m["y"]: m for m in metrics_config}
 
     metrics_config = [metrics[m] for m in metric_keys if m in metrics]
+
     datasets = []
+    if split_dataset == "individual":
+        datasets = list(dict.fromkeys(df["dataset"].dropna())) if "dataset" in df.columns else [None]
+    elif split_dataset == "collection":
+        datasets = (
+            list(dict.fromkeys(df["dataset_collection"].dropna())) if "dataset_collection" in df.columns else [None]
+        )
+
     plot_configs = []
 
     stack_datasets_vertically = not stack_datasets_horizontally
 
-    if split_choice and split_dataset:
+    if split_choice and split_dataset != "none":
         # Split both choice and dataset
         split_col_choice = "choice" if "choice" in df.columns else "method"
         choices = sorted(df[split_col_choice].dropna().unique().tolist())
-        datasets = list(dict.fromkeys(df["dataset"].dropna())) if "dataset" in df.columns else [None]
         for choice_val in choices:
             iter_product = (
                 itertools.product(datasets, metrics_config)
@@ -1792,7 +1840,7 @@ def plot_graph(
                 cfg["choice_val"] = choice_val
                 cfg["dataset_val"] = dataset_val
                 cfg["split_choice"] = True
-                cfg["split_dataset"] = True
+                cfg["split_dataset"] = split_dataset
                 plot_configs.append(cfg)
     elif split_choice:
         split_col = "choice" if "choice" in df.columns else "method"
@@ -1804,8 +1852,7 @@ def plot_graph(
                 cfg["choice_val"] = choice_val
                 cfg["split_col"] = split_col
                 plot_configs.append(cfg)
-    elif split_dataset:
-        datasets = list(dict.fromkeys(df["dataset"].dropna())) if "dataset" in df.columns else [None]
+    elif split_dataset != "none":
         iter_product = (
             itertools.product(datasets, metrics_config)
             if stack_datasets_vertically
@@ -1817,6 +1864,7 @@ def plot_graph(
             dataset_str = str(dataset_val) if dataset_val else "Unknown"
             cfg["title"] = f"{cfg['title']} - {dataset_str}"
             cfg["dataset_val"] = dataset_val
+            cfg["split_dataset"] = split_dataset
             plot_configs.append(cfg)
     else:
         plot_configs = metrics_config.copy()
@@ -1825,7 +1873,7 @@ def plot_graph(
         print("No metrics/choices to plot.")
         return
 
-    if split_dataset and len(datasets) > 0:
+    if split_dataset != "none" and len(datasets) > 0:
         cols = len(datasets) if stack_datasets_horizontally else len(metrics_config)
         rows = len(plot_configs) // cols + (1 if len(plot_configs) % cols else 0)
     else:
@@ -1863,8 +1911,10 @@ def plot_graph(
                     (df[split_col] == config["choice_val"]) | (df[split_col].isna() & (df["method"] == "colmap"))
                 ]
 
-        if split_dataset and "dataset_val" in config:
+        if config.get("split_dataset") == "individual" and "dataset_val" in config:
             plot_df = plot_df[plot_df["dataset"] == config["dataset_val"]]
+        elif config.get("split_dataset") == "collection" and "dataset_val" in config:
+            plot_df = plot_df[plot_df["dataset_collection"] == config["dataset_val"]]
 
         if x_axis == "conf_thres_value" and not colmap_df.empty:
             plot_df = plot_df[plot_df["method"] != "colmap"]
@@ -2199,8 +2249,11 @@ def plot_table(
     dataset_name: str | None = None,
     experiment_name: str | None = None,
     split_choice: bool = False,
-    split_dataset: bool = False,
+    split_dataset: Literal["none", "individual", "collection"] | bool = "none",
 ):
+    if isinstance(split_dataset, bool):
+        split_dataset = "individual" if split_dataset else "none"
+
     dynamic_rounding = False
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
 
@@ -2218,8 +2271,10 @@ def plot_table(
     # Select relevant columns: choice, x_axis, split params, and metrics
     columns_to_include = ["choice"]
 
-    if split_dataset and "dataset" in df.columns:
+    if split_dataset == "individual" and "dataset" in df.columns:
         columns_to_include.append("dataset")
+    elif split_dataset == "collection" and "dataset_collection" in df.columns:
+        columns_to_include.append("dataset_collection")
 
     if x_axis:
         columns_to_include.append(x_axis)
@@ -2251,8 +2306,11 @@ def plot_table(
 
     # Sort the dataframe
     sort_cols = []
-    if split_dataset and "dataset" in df_table.columns:
+    if split_dataset == "individual" and "dataset" in df_table.columns:
         sort_cols.append("dataset")
+    elif split_dataset == "collection" and "dataset_collection" in df_table.columns:
+        sort_cols.append("dataset_collection")
+
     if split_choice and "choice" in df_table.columns:
         sort_cols.append("choice")
     elif "choice" in df_table.columns and "choice" not in sort_cols:
@@ -2284,6 +2342,9 @@ def plot_table(
     if "dataset" in df_table.columns:
         rename_map["dataset"] = "Dataset"
 
+    if "dataset_collection" in df_table.columns:
+        rename_map["dataset_collection"] = "Dataset Collection"
+
     if x_axis and x_axis in df_table.columns:
         rename_map[x_axis] = x_axis.replace("_", " ").title()
 
@@ -2310,10 +2371,14 @@ def plot_table(
 
     # Determine split keys for formatting groups
     split_keys = []
-    if split_dataset and "Dataset" in df_table_renamed.columns:
+    if split_dataset == "individual" and "Dataset" in df_table_renamed.columns:
         split_keys.append("Dataset")
-    elif split_dataset and "dataset" in df_table_renamed.columns:
+    elif split_dataset == "individual" and "dataset" in df_table_renamed.columns:
         split_keys.append("dataset")
+    elif split_dataset == "collection" and "Dataset Collection" in df_table_renamed.columns:
+        split_keys.append("Dataset Collection")
+    elif split_dataset == "collection" and "dataset_collection" in df_table_renamed.columns:
+        split_keys.append("dataset_collection")
 
     if split_choice and "Choice" in df_table_renamed.columns:
         split_keys.append("Choice")
