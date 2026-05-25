@@ -133,7 +133,10 @@ regexes = [
     Param(name="conf_thres_value", pattern=r"_c(\d+\.\d+)", cast=float),
     Param(name="num_points", pattern=r"_p(\d+)", cast=int),
     Param(
-        name="sampling_mode", pattern=r"_(ba)|_(voxels)|_(confidence)|_(random)|_(vox3)|_(fps)|_(imagefps)", cast=str
+        name="sampling_mode",
+        pattern=r"_(ba)|_(voxels)|_(confidence)|_(random)|_(vox3)|_(fps)"
+        r"|_(imagefps)|_(imagefreqvoxels)|_(imagefreqnovis)|_(imagefreq)",
+        cast=str,
     ),
     Param(name="near_filtering_strength", pattern=r"_nf(\d+\.\d+|\d+)", cast=str),
     Param(name="near_filtering_quorum", pattern=r"_nq(\d+)", cast=int),
@@ -1321,13 +1324,16 @@ def _process_single_render(
         # pred_img.paste(gt_cropped, (w // 2, 0))
 
         if show_gt:
-            gt_img = resize_with_padding(gt_img, image_width, image_height)
-            gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
-            # Add border and padding
-            gt_img = ImageOps.expand(gt_img, border=4, fill="black")
-            gt_img = ImageOps.expand(gt_img, border=20, fill="white")
-            images.append(gt_img)
-            return images
+            # gt_img = resize_with_padding(gt_img, image_width, image_height)
+            # gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
+            # # Add border and padding
+            # gt_img = ImageOps.expand(gt_img, border=4, fill="black")
+            # gt_img = ImageOps.expand(gt_img, border=20, fill="white")
+            # images.append(gt_img)
+            # return images
+            pred_img = gt_img
+            # TODO Add GT depth
+            show_depth = False
 
         # TODO Decide if we want to do one of these
         # Paste a small version of the diff img in the bottom left corner of the pred_img
@@ -1366,7 +1372,11 @@ def _process_single_render(
         lpips_str = f"{lpips_val:.4f}" if pd.notna(lpips_val) else "N/A"
         ssim_str = f"{ssim_val:.4f}" if pd.notna(ssim_val) else "N/A"
 
-        label_text = f"Config: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
+        label_text = (
+            f"{dataset_name}: Ground Truth\n"
+            if show_gt else
+            f"{dataset_name}: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
+        )
 
         pred_img = resize_with_padding(pred_img, image_width, image_height)
 
@@ -1423,7 +1433,9 @@ def _process_single_render(
                 for i, (idx, lbl) in enumerate(zip(idxs_to_show, labels)):
                     if idx < len(render_files):
                         dfactor = depth_factors[idx] if depth_factors else None
-                        _, alt_pred, alt_depth = load_and_split(render_files[idx], dfactor)
+                        alt_gt, alt_pred, alt_depth = load_and_split(render_files[idx], dfactor)
+                        if show_gt:
+                            alt_pred = alt_gt
                         if alt_depth is not None and show_depth:
                             w, h = alt_pred.size
                             alt_depth = alt_depth.crop((w // 2, 0, w, h))
@@ -1720,7 +1732,7 @@ def plot_graph(
     make_pcd_plot: bool = False,
     stack_datasets_horizontally: bool = True,
     show_zoom: bool = True,
-    show_alt_frames: bool = True,
+    show_alt_frames: bool = False,
 ):
     if isinstance(split_dataset, bool):
         split_dataset = "individual" if split_dataset else "none"
