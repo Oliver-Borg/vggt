@@ -21,7 +21,7 @@ import seaborn as sns
 from PIL import Image, ImageDraw, ImageFont
 import scienceplots
 
-from .plot_cameras import CameraSeries, plot_extrinsics
+from .plot_cameras import CameraSeries, plot_extrinsics, _get_global_alignment, _calculate_all_errors
 from .cam_utils import load_poses_from_json
 from .plot_point_cloud import plot_point_clouds
 
@@ -1379,8 +1379,8 @@ def _process_single_render(
 
         label_text = (
             f"{dataset_name}: Ground Truth\n"
-            if show_gt else
-            f"{dataset_name}: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
+            if show_gt
+            else f"{dataset_name}: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
         )
 
         pred_img = resize_with_padding(pred_img, image_width, image_height)
@@ -1622,7 +1622,7 @@ def create_render_figure(
         tex_out_path = str(Path(latest_render_pdf).with_suffix(".tex"))
         save_figure_tex(
             tex_out_path,
-            "Images/04-Results/Renders/" + Path(latest_render_jpg).name,
+            "Images/04-Results/Renders/" + Path(latest_render_pdf).name,
             caption=latex_caption,
             label=latex_label,
         )
@@ -1637,68 +1637,120 @@ def plot_cameras(
     varying_colors: bool = False,
     use_error_colors: bool = False,
     max_cols: int = 3,
+    split_dataset_normalization: bool = True,
+    stack_datasets_horizontally: bool = True,
 ):
-    dest_base.mkdir(parents=True, exist_ok=True)
-    series_list: list[CameraSeries] = []
     df = df.copy()
     cmap = plt.get_cmap("tab10")
-    image_names = []
-    for i, (idx, row) in enumerate(df.iterrows()):
-        file_path = row.get("sfm_file_path", "")
-        if not file_path or pd.isna(file_path):
+
+    split_cols = ["dataset"]
+    if "seed" in df.columns and df["seed"].nunique() > 1:
+        split_cols.append("seed")
+    if "image_mode" in df.columns and df["image_mode"].nunique() > 1:
+        split_cols.append("image_mode")
+
+    grouped = df.groupby(split_cols, dropna=False)
+    groups_data = []
+
+    for group_keys, group_df in grouped:
+        if isinstance(group_keys, str) or not isinstance(group_keys, tuple):
+            group_keys = (group_keys,)
+
+        group_suffix_parts = []
+        for col, key in zip(split_cols, group_keys):
+            if pd.notna(key) and key != "":
+                group_suffix_parts.append(f"{col}_{key}")
+        group_suffix = "-".join(group_suffix_parts) if group_suffix_parts else "default"
+
+        best_gt_poses = {}
+        for i, (idx, row) in enumerate(group_df.iterrows()):
+            file_path = row.get("sfm_file_path", "")
+            if not file_path or pd.isna(file_path):
+                continue
+
+            p = Path(file_path)
+            if p.name == "eval_results.json":
+                pose_file = p.parent / "gt_cameras.json"
+                if pose_file.exists():
+                    poses = load_poses_from_json(pose_file)
+                    if len(poses) > len(best_gt_poses):
+                        best_gt_poses = poses
+
+        if not best_gt_poses:
             continue
 
-        p = Path(file_path)
-        if p.name == "eval_results.json":
-            if i == 0:
-                pose_file = p.parent / "gt_cameras.json"
-                color = cmap(i) if varying_colors else (0.5, 0.5, 0.5, 1.0)
+        series_list: list[CameraSeries] = []
+        seen_pose_files = set()
+
+        for i, (idx, row) in enumerate(group_df.iterrows()):
+            file_path = row.get("sfm_file_path", "")
+            if not file_path or pd.isna(file_path):
+                continue
+
+            p = Path(file_path)
+            if p.name == "eval_results.json":
+                pose_file = p.parent / "aligned_cameras.json"
+
+                if not pose_file.exists():
+                    continue
+
+                # Ensure we only plot each configuration alignment once
+                if pose_file in seen_pose_files:
+                    continue
+                seen_pose_files.add(pose_file)
+
+                config_name = (
+                    str(row.get("plot_series", p.parent.name))
+                    .replace("colmap", "COLMAP")
+                    .replace("vggt", "VGGT")
+                    .replace("gt", "GT")
+                    .replace("combined", "Combined")
+                )
+                if x_axis and pd.notna(row.get(x_axis)):
+                    config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+
+                # Prepend the dataset identifier
+                dataset_name = row.get("dataset", "")
+                if dataset_name:
+                    config_name = f"{dataset_name}: {config_name}"
+
+                color = cmap(len(series_list) + 1) if varying_colors else (1.0, 0.0, 0.0, 1.0)
                 color = (*color[:3], 1.0)
                 series = CameraSeries(
-                    label="Ground Truth",
-                    colour=color,
-                    poses=load_poses_from_json(pose_file),
+                    label=config_name, colour=color, poses=load_poses_from_json(pose_file), gt_poses=best_gt_poses
                 )
                 series_list.append(series)
 
-            config_name = (
-                str(row.get("plot_series", p.parent.name))
-                .replace("colmap", "COLMAP")
-                .replace("vggt", "VGGT")
-                .replace("gt", "GT")
-                .replace("combined", "Combined")
-            )
-            if x_axis and pd.notna(row.get(x_axis)):
-                config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+        if series_list:
+            image_names = []
+            largest_series = series_list[0]
+            for series in series_list:
+                image_names.extend(series.poses.keys())
+                if len(series.poses) > len(largest_series.poses):
+                    largest_series = series
+            image_names = list(set(image_names))
 
-            pose_file = p.parent / "aligned_cameras.json"
-            color = cmap(i + 1) if varying_colors else (1.0, 0.0, 0.0, 1.0)
-            color = (*color[:3], 1.0)
-            series = CameraSeries(
-                label=config_name,
-                colour=color,
-                poses=load_poses_from_json(pose_file),
-            )
-            series_list.append(series)
+            groups_data.append((group_suffix, series_list, image_names))
 
-    if len(series_list) < 3:
+    if not groups_data:
         return
 
-    largest_series = series_list[2]
-    for series in series_list[2:]:
-        image_names.extend(series.poses.keys())
-        if len(series.poses) > len(largest_series.poses):
-            largest_series = series
-
-    image_names = list(set(image_names))
+    global_max_rte = None
+    if not split_dataset_normalization and use_error_colors:
+        global_max_rte = 0.0
+        for _, series_list, image_names in groups_data:
+            R_align = _get_global_alignment(series_list, image_names)
+            if R_align is not None:
+                _, local_max = _calculate_all_errors(series_list, image_names, R_align)
+                global_max_rte = max(global_max_rte, local_max)
 
     plot_extrinsics(
-        series_list[0],
-        series_list[1:],
-        dest_base,
-        image_names,
-        use_error_colors=use_error_colors,
+        groups_data=groups_data,
+        output_path=dest_base,
         max_cols=max_cols,
+        use_error_colors=use_error_colors,
+        max_error_override=global_max_rte,
+        stack_datasets_horizontally=stack_datasets_horizontally,
     )
 
 
@@ -2221,11 +2273,18 @@ def plot_graph(
                 show_alt_frames=show_alt_frames,
             )
     if camera_folders is not None and make_camera_plot:
-        camera_df = df[df["input_folder"].isin(camera_folders)]
-        if not camera_df.empty:
-            plot_cameras(
-                camera_df, Path(suffix + "_cameras"), x_axis=x_axis, use_error_colors=True, max_cols=max_render_cols
-            )
+        if camera_folders is not None and make_camera_plot:
+            camera_df = df[df["input_folder"].isin(camera_folders)]
+            if not camera_df.empty:
+                plot_cameras(
+                    camera_df,
+                    Path(suffix + "_cameras"),
+                    x_axis=x_axis,
+                    use_error_colors=True,
+                    max_cols=max_render_cols,
+                    split_dataset_normalization=True,
+                    stack_datasets_horizontally=stack_datasets_horizontally,
+                )
 
     if camera_folders is not None and make_pcd_plot:
         pcd_df = df[df["input_folder"].isin(camera_folders)]
@@ -2571,7 +2630,9 @@ def plot_table(
 
         if only_best_rows:
             # Filter the formatted block to only include rows with at least one best or second-best highlight
-            mask_keep = sub_df.apply(lambda row: any("\\textbf{" in str(v) or "\\underline{" in str(v) for v in row), axis=1)
+            mask_keep = sub_df.apply(
+                lambda row: any("\\textbf{" in str(v) or "\\underline{" in str(v) for v in row), axis=1
+            )
             sub_df = sub_df[mask_keep]
 
         if sub_df.empty:

@@ -17,16 +17,17 @@ class CameraSeries:
     label: str
     colour: tuple[float, float, float] | tuple[float, float, float, float]
     poses: dict[str, np.ndarray]
+    gt_poses: dict[str, np.ndarray]
 
 
 def _get_global_alignment(
-    gt_series: CameraSeries,
     series_list: list[CameraSeries],
     image_names: list[str] | None,
 ) -> np.ndarray | None:
     """Gathers all poses and computes a single alignment rotation."""
-    all_poses_for_alignment = list(v for k, v in gt_series.poses.items() if image_names is None or k in image_names)
+    all_poses_for_alignment = []
     for series in series_list:
+        all_poses_for_alignment.extend(v for k, v in series.gt_poses.items() if image_names is None or k in image_names)
         all_poses_for_alignment.extend(v for k, v in series.poses.items() if image_names is None or k in image_names)
 
     if not all_poses_for_alignment:
@@ -36,7 +37,6 @@ def _get_global_alignment(
 
 
 def _calculate_all_errors(
-    gt_series: CameraSeries,
     series_list: list[CameraSeries],
     image_names: list[str] | None,
     R_align_global: np.ndarray,
@@ -45,13 +45,13 @@ def _calculate_all_errors(
     all_errors = defaultdict(dict)
     global_max_rte = 0.0
 
-    # Align GT centers once
-    gt_centers_aligned = {
-        k: R_align_global @ v[:3, 3] for k, v in gt_series.poses.items() if image_names is None or k in image_names
-    }
-
     for series in series_list:
         series_errors = {}
+        # Align GT centers once for this specific series
+        gt_centers_aligned = {
+            k: R_align_global @ v[:3, 3] for k, v in series.gt_poses.items() if image_names is None or k in image_names
+        }
+
         for k, v in series.poses.items():
             if k not in gt_centers_aligned:
                 continue
@@ -236,154 +236,190 @@ def plot_cameras(
 
 @profile
 def plot_extrinsics(
-    gt_series: CameraSeries,
-    series_list: list[CameraSeries],
+    groups_data: list[tuple[str, list[CameraSeries], list[str] | None]],
     output_path: Path,
-    image_names: list[str] | None = None,
     max_cols: int = 3,
     use_error_colors: bool = False,
+    max_error_override: float | None = None,
+    stack_datasets_horizontally: bool = True,
 ):
-    num_series = len(series_list)
-    if num_series == 0:
+    if not groups_data:
         return
 
-    cols = min(num_series, max_cols)
-    rows = (num_series + cols - 1) // cols
+    group_layouts = []
+    for name, series_list, img_names in groups_data:
+        num_series = len(series_list)
+        cols = min(num_series, max_cols)
+        rows = (num_series + cols - 1) // cols if cols > 0 else 1
+        group_layouts.append((rows, cols))
 
-    fig = plt.figure(figsize=(5 * cols, 4.5 * rows))
-
-    # Pre-calculate a global max RTE for consistent color scaling across all subplots
-    R_align_global = _get_global_alignment(gt_series, series_list, image_names)
-    if use_error_colors and R_align_global is not None:
-        all_errors, global_max_rte = _calculate_all_errors(gt_series, series_list, image_names, R_align_global)
+    # Calculate overall grid dimensions based on stacking preference
+    if stack_datasets_horizontally:
+        total_rows = max(r for r, c in group_layouts) if group_layouts else 1
+        total_cols = sum(c for r, c in group_layouts) if group_layouts else 1
     else:
-        all_errors, global_max_rte = defaultdict(dict), 0.0
+        total_rows = sum(r for r, c in group_layouts) if group_layouts else 1
+        total_cols = max(c for r, c in group_layouts) if group_layouts else 1
+
+    fig = plt.figure(figsize=(5 * total_cols, 4.5 * total_rows))
 
     if use_error_colors:
         min_error_for_norm = 1e-3  # Matching plot_cameras
-        norm = clrs.LogNorm(vmin=min_error_for_norm, vmax=max(global_max_rte, min_error_for_norm + 1e-9))
         cmap = plt.get_cmap("jet")
 
-    for idx, series in enumerate(series_list):
-        ax = plt.subplot(rows, cols, idx + 1)
-        plt.sca(ax)
+    gt_label = "GT_"
+    gt_colour = (0.5, 0.5, 0.5, 1.0)
 
-        combined_poses: dict[str, np.ndarray] = {}
-        colours = {}
-        linked_poses = defaultdict(list)
+    row_offset = 0
+    col_offset = 0
 
-        # Add GT series
-        for k, v in gt_series.poses.items():
-            if image_names is not None and k not in image_names:
-                continue
-            combined_poses[gt_series.label + k] = v
-            colours[gt_series.label + k] = gt_series.colour
-            linked_poses[k].append(gt_series.label + k)
+    for g_idx, (group_name, series_list, image_names) in enumerate(groups_data):
+        r_g, c_g = group_layouts[g_idx]
+        if len(series_list) == 0:
+            continue
 
-        # Add the current series being compared
-        for k, v in series.poses.items():
-            if image_names is not None and k not in image_names:
-                continue
-            combined_poses[series.label + k] = v
-            if use_error_colors:
-                colours[series.label + k] = None
-            else:
-                colours[series.label + k] = series.colour
-            linked_poses[k].append(series.label + k)
+        R_align_global = _get_global_alignment(series_list, image_names)
+        if use_error_colors and R_align_global is not None:
+            all_errors, group_max_rte = _calculate_all_errors(series_list, image_names, R_align_global)
+            if max_error_override is not None:
+                group_max_rte = max_error_override
+        else:
+            all_errors, group_max_rte = defaultdict(dict), 0.0
 
-        # Prepare errors for the current subplot
-        subplot_errors = {}
         if use_error_colors:
-            pred_errors_by_key = all_errors.get(series.label, {})
-            for k, rte in pred_errors_by_key.items():
-                subplot_errors[series.label + k] = rte
-            # Add GT errors (which are 0)
-            for k in pred_errors_by_key:
-                if (gt_series.label + k) in combined_poses:
-                    subplot_errors[gt_series.label + k] = 0.0
+            norm = clrs.LogNorm(vmin=min_error_for_norm, vmax=max(group_max_rte, min_error_for_norm + 1e-9))
 
-        plot_cameras(
-            combined_poses,
-            colours,
-            linked_poses=linked_poses,
-            use_error=use_error_colors,
-            gt_label=gt_series.label,
-            max_error_override=global_max_rte if use_error_colors else None,
-            R_align_override=R_align_global,
-            errors_override=subplot_errors if use_error_colors else None,
-        )
+        for idx, series in enumerate(series_list):
+            r = idx // c_g
+            c = idx % c_g
 
-        # Calculate and display metrics on the subplot
-        local_rtes = list(all_errors.get(series.label, {}).values())
-
-        if local_rtes:
-            avg_rte = np.mean(local_rtes)
-            num_aligned = len(local_rtes)
-            text_str = f"Avg. RTE: {avg_rte:.4f}\nNum Aligned: {num_aligned}"
-            ax.text(
-                0.95,
-                0.95,
-                text_str,
-                transform=ax.transAxes,
-                fontsize=8,
-                verticalalignment="top",
-                horizontalalignment="right",
-                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7),
-            )
-
-        # Create legend handles for the GT and the current series subplot
-        legend_elements = []
-        if any(k.startswith(gt_series.label) for k in combined_poses):
-            legend_elements.append(
-                lines.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    label=gt_series.label,
-                    markerfacecolor=gt_series.colour,
-                    markersize=10,
-                    markeredgecolor="k",
-                )
-            )
-        if any(k.startswith(series.label) for k in combined_poses):
-            # When using error colors, the legend marker should be neutral
-            # as the colorbar indicates the error scale.
-            if use_error_colors:
-                local_max_rte = max(local_rtes) if local_rtes else 0.0
-                pred_marker_face_color = cmap(norm(local_max_rte)) if local_max_rte > 0 else cmap(0.0)
+            # Determine the subplot index in the global grid
+            if stack_datasets_horizontally:
+                ax_idx = r * total_cols + col_offset + c + 1
             else:
-                pred_marker_face_color = series.colour
+                ax_idx = (row_offset + r) * total_cols + c + 1
 
-            legend_elements.append(
-                lines.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    label=series.label,
-                    markerfacecolor=pred_marker_face_color,
-                    markersize=10,
-                    markeredgecolor="k",
+            ax = plt.subplot(total_rows, total_cols, ax_idx)
+            plt.sca(ax)
+
+            combined_poses: dict[str, np.ndarray] = {}
+            colours = {}
+            linked_poses = defaultdict(list)
+
+            # Add GT series
+            for k, v in series.gt_poses.items():
+                if image_names is not None and k not in image_names:
+                    continue
+                combined_poses[gt_label + k] = v
+                colours[gt_label + k] = gt_colour
+                linked_poses[k].append(gt_label + k)
+
+            # Add the current series being compared
+            for k, v in series.poses.items():
+                if image_names is not None and k not in image_names:
+                    continue
+                combined_poses[series.label + k] = v
+                if use_error_colors:
+                    colours[series.label + k] = None
+                else:
+                    colours[series.label + k] = series.colour
+                linked_poses[k].append(series.label + k)
+
+            # Prepare errors for the current subplot
+            subplot_errors = {}
+            if use_error_colors:
+                pred_errors_by_key = all_errors.get(series.label, {})
+                for k, rte in pred_errors_by_key.items():
+                    subplot_errors[series.label + k] = rte
+                # Add GT errors (which are 0)
+                for k in pred_errors_by_key:
+                    if (gt_label + k) in combined_poses:
+                        subplot_errors[gt_label + k] = 0.0
+
+            plot_cameras(
+                combined_poses,
+                colours,
+                linked_poses=linked_poses,
+                use_error=use_error_colors,
+                gt_label=gt_label,
+                max_error_override=group_max_rte if use_error_colors else None,
+                R_align_override=R_align_global,
+                errors_override=subplot_errors if use_error_colors else None,
+            )
+
+            # Calculate and display metrics on the subplot
+            local_rtes = list(all_errors.get(series.label, {}).values())
+
+            if local_rtes:
+                avg_rte = np.mean(local_rtes)
+                num_aligned = len(local_rtes)
+                text_str = f"Avg. RTE: {avg_rte:.4f}\nNum Aligned: {num_aligned}"
+                ax.text(
+                    0.95,
+                    0.95,
+                    text_str,
+                    transform=ax.transAxes,
+                    fontsize=8,
+                    verticalalignment="top",
+                    horizontalalignment="right",
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7),
                 )
-            )
 
-        if legend_elements:
-            ax.legend(
-                handles=legend_elements,
-                loc="upper center",
-                bbox_to_anchor=(0.5, -0.25),
-                ncol=len(legend_elements),
-                frameon=True,
-                fancybox=True,
-                shadow=False,
-                framealpha=0.9,
-            )
+            # Create legend handles for the GT and the current series subplot
+            legend_elements = []
+            if any(k.startswith(gt_label) for k in combined_poses):
+                legend_elements.append(
+                    lines.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        label="Ground Truth",
+                        markerfacecolor=gt_colour,
+                        markersize=10,
+                        markeredgecolor="k",
+                    )
+                )
+            if any(k.startswith(series.label) for k in combined_poses):
+                if use_error_colors:
+                    local_max_rte = max(local_rtes) if local_rtes else 0.0
+                    pred_marker_face_color = cmap(norm(local_max_rte)) if local_max_rte > 0 else cmap(0.0)
+                else:
+                    pred_marker_face_color = series.colour
+
+                legend_elements.append(
+                    lines.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        label=series.label,
+                        markerfacecolor=pred_marker_face_color,
+                        markersize=10,
+                        markeredgecolor="k",
+                    )
+                )
+
+            if legend_elements:
+                ax.legend(
+                    handles=legend_elements,
+                    loc="upper center",
+                    bbox_to_anchor=(0.5, -0.25),
+                    ncol=len(legend_elements),
+                    frameon=True,
+                    fancybox=True,
+                    shadow=False,
+                    framealpha=0.9,
+                )
+
+        if stack_datasets_horizontally:
+            col_offset += c_g
+        else:
+            row_offset += r_g
 
     plt.tight_layout(rect=(0, 0.05, 1, 1))
 
     output_path = Path(output_path)
-
     output_path.mkdir(parents=True, exist_ok=True)
 
     jpg_path = output_path / "camera_alignment.jpg"
@@ -406,21 +442,12 @@ if __name__ == "__main__":
     assert args.gt_path.endswith(".json")
     assert args.pred_path.endswith(".json")
 
-    gt_series = CameraSeries(
-        "gt_",
-        (0.0, 0.0, 1.0, 0.5),
-        load_poses_from_json(Path(args.gt_path)),
-    )
-    pred_series = CameraSeries(
-        "pred_",
-        (1.0, 0.0, 0.0, 0.5),
-        load_poses_from_json(Path(args.pred_path)),
-    )
+    gt_poses = load_poses_from_json(Path(args.gt_path))
+
+    pred_series = CameraSeries("pred_", (1.0, 0.0, 0.0, 0.5), load_poses_from_json(Path(args.pred_path)), gt_poses)
 
     plot_extrinsics(
-        gt_series=gt_series,
-        series_list=[pred_series],
+        groups_data=[("default", [pred_series], None)],
         output_path=Path(args.output_path),
-        image_names=None,
         use_error_colors=True,
     )
