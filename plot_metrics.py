@@ -107,7 +107,7 @@ dataset_collections = {
 ZOOM_CONFIGS = {
     "bicycle": [(0.15, (0.6, 0.5)), (0.15, (0.1, 0.2)), (0.15, (0.6, 0.1))],
     "garden": [(0.15, (0.8, 0.2)), (0.15, (0.5, 0.3)), (0.15, (0.5, 0.5))],
-    "stump": [(0.15, (0.3, 0.1)), (0.15, (0.75, 0.5)), (0.15, (0.25, 0.75))],
+    "stump": [(0.15, (0.4, 0.1)), (0.15, (0.75, 0.5)), (0.15, (0.25, 0.75))],
     "bonsai": [(0.15, (0.7, 0.5)), (0.15, (0.5, 0.2)), (0.15, (0.5, 0.8))],
     "kitchen": [(0.15, (0.7, 0.1)), (0.15, (0.6, 0.4)), (0.15, (0.25, 0.6))],
     "counter": [(0.15, (0.5, 0.5)), (0.15, (0.25, 0.75)), (0.15, (0.8, 0.3))],
@@ -1733,6 +1733,7 @@ def plot_graph(
     stack_datasets_horizontally: bool = True,
     show_zoom: bool = True,
     show_alt_frames: bool = False,
+    only_best_rows: bool = False,
 ):
     if isinstance(split_dataset, bool):
         split_dataset = "individual" if split_dataset else "none"
@@ -2346,6 +2347,7 @@ def plot_graph(
             experiment_name=experiment_name,
             split_choice=split_choice,
             split_dataset=split_dataset,
+            only_best_rows=only_best_rows,
         )
 
 
@@ -2364,6 +2366,7 @@ def plot_table(
     experiment_name: str | None = None,
     split_choice: bool = False,
     split_dataset: Literal["none", "individual", "collection"] | bool = "none",
+    only_best_rows: bool = False,
 ):
     if isinstance(split_dataset, bool):
         split_dataset = "individual" if split_dataset else "none"
@@ -2513,6 +2516,7 @@ def plot_table(
             column_format += "l"
 
     latex_bodies = []
+    kept_indices = []
     for config in configs:
         mask = pd.Series(True, index=df_table_renamed.index)
         for k, v in config.items():
@@ -2555,6 +2559,16 @@ def plot_table(
                 sub_df[col_name] = formatted_col
             else:
                 sub_df[col_name] = col.apply(lambda x: str(x) if pd.notna(x) else "")
+
+        if only_best_rows:
+            # Filter the formatted block to only include rows with at least one best or second-best highlight
+            mask_keep = sub_df.apply(lambda row: any("\\textbf{" in str(v) or "\\underline{" in str(v) for v in row), axis=1)
+            sub_df = sub_df[mask_keep]
+
+        if sub_df.empty:
+            continue
+
+        kept_indices.extend(sub_df.index)
 
         # Get body latex
         sub_latex = sub_df.to_latex(index=False, header=False, escape=False, na_rep="")
@@ -2603,6 +2617,10 @@ def plot_table(
     latex_table = f"{header_part}\n{joined_bodies}\n{footer_part}"
 
     latex_table = latex_table.replace("\\begin{tabular}", "\\small\n\\begin{tabular}")
+
+    # Ensure the unformatted df used for the CSV matches the filtered rows if applicable
+    if only_best_rows:
+        df_table = df_table.loc[kept_indices]
 
     # Save to file
     suffix = f"plots/{experiment_name}_{dataset_name}_{prefix}"
