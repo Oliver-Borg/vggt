@@ -479,6 +479,11 @@ def load_metrics_to_df(
     df["dataset"] = pd.Categorical(df["dataset"], categories=dataset_order, ordered=True)
     df["dataset_collection"] = pd.Categorical(df["dataset_collection"], categories=collection_order, ordered=True)
 
+    if "use_gt_extrinsics" in df.columns:
+        mask = df["use_gt_extrinsics"] == "GT Extrinsics"
+        df.loc[mask, "eval_rte"] = 0.0
+        df.loc[mask, "eval_rre"] = 0.0
+
     # Merge rows that share the same unique identifiers (method, num_images, seed, etc.)
     # Since SfM and GS metrics come from different files but belong to the same run,
     # we group by identifiers and combine the columns.
@@ -1939,13 +1944,13 @@ def plot_graph(
         # Split both choice and dataset
         split_col_choice = "choice" if "choice" in df.columns else "method"
         choices = sorted(df[split_col_choice].dropna().unique().tolist())
-        for choice_val in choices:
-            iter_product = (
-                itertools.product(datasets, metrics_config)
-                if stack_datasets_vertically
-                else itertools.product(metrics_config, datasets)
-            )
-            for item in iter_product:
+        iter_product = (
+            itertools.product(datasets, metrics_config)
+            if stack_datasets_vertically
+            else itertools.product(metrics_config, datasets)
+        )
+        for item in iter_product:
+            for choice_val in choices:
                 dataset_val, m_config = item if stack_datasets_vertically else item[::-1]
                 cfg = m_config.copy()
                 dataset_str = f" - {dataset_val}" if dataset_val else ""
@@ -1988,6 +1993,8 @@ def plot_graph(
 
     if split_dataset != "none" and len(datasets) > 0:
         cols = len(datasets) if stack_datasets_horizontally else len(metrics_config)
+        if split_choice and cols % 2 != 0:
+            cols *= 2
         rows = len(plot_configs) // cols + (1 if len(plot_configs) % cols else 0)
     else:
         if horizontal:
@@ -2102,6 +2109,8 @@ def plot_graph(
             estimated_item_width = (max_label_length + 5) * 0.07
             allowed_cols = max(1, int(fig_width / estimated_item_width))
             ncol = min(len(handles), allowed_cols)
+            if split_choice:
+                ncol = 2
 
             remainder = len(handles) % ncol
             if remainder > 0:
