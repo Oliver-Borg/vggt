@@ -1592,7 +1592,7 @@ def create_render_figure(
     else:
         stacked_img = _stack_images_with_wrap(dataset_columns, max_cols=1)
 
-    out_file = dest_base / "stacked_renders.png"
+    out_file = dest_base / "stacked_renders.jpg"
     stacked_img.save(out_file)
     print(f"Saved stacked renders to {out_file}")
 
@@ -1604,9 +1604,9 @@ def create_render_figure(
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
         os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
 
-        latest_render_png = f"{latest_suffix}_renders.png"
-        shutil.copy2(out_file, latest_render_png)
-        print("Latest copy saved:", Path(latest_render_png))
+        latest_render_jpg = f"{latest_suffix}_renders.jpg"
+        shutil.copy2(out_file, latest_render_jpg)
+        print("Latest copy saved:", Path(latest_render_jpg))
 
         latest_render_pdf = f"{latest_suffix}_renders.pdf"
         shutil.copy2(out_pdf, latest_render_pdf)
@@ -1622,7 +1622,7 @@ def create_render_figure(
         tex_out_path = str(Path(latest_render_pdf).with_suffix(".tex"))
         save_figure_tex(
             tex_out_path,
-            "Images/04-Results/Renders/" + Path(latest_render_pdf).name,
+            "Images/04-Results/Renders/" + Path(latest_render_jpg).name,
             caption=latex_caption,
             label=latex_label,
         )
@@ -2173,17 +2173,17 @@ def plot_graph(
         print("Config saved:", Path(config_out_file))
 
     plt.tight_layout()
-    out_file = f"{suffix}.png"
+    out_file = f"{suffix}.jpg"
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     plt.savefig(out_file, dpi=100, bbox_inches="tight")
     plt.savefig(str(Path(out_file).with_suffix(".pdf")), bbox_inches="tight", metadata={"CreationDate": None})
     print("Comprehensive plot saved:", Path(out_file), "and PDF")
 
-    pcp_out_file = f"{suffix}_pcp.png"
+    pcp_out_file = f"{suffix}_pcp.jpg"
     if create_pcp:
         plot_pcp(df, pcp_out_file, color_map, title=title if print_title else None)
 
-    combo_out_file = f"{suffix}_combos.png"
+    combo_out_file = f"{suffix}_combos.jpg"
     if create_combinations:
         plot_metric_combinations(
             df,
@@ -2235,21 +2235,21 @@ def plot_graph(
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
         os.makedirs(os.path.dirname(latest_suffix), exist_ok=True)
-        latest_full_png = f"{latest_suffix}_full.png"
-        shutil.copy2(out_file, latest_full_png)
-        print("Latest copy saved:", Path(latest_full_png))
+        latest_full_jpg = f"{latest_suffix}_full.jpg"
+        shutil.copy2(out_file, latest_full_jpg)
+        print("Latest copy saved:", Path(latest_full_jpg))
         latest_full_pdf = f"{latest_suffix}_full.pdf"
         shutil.copy2(str(Path(out_file).with_suffix(".pdf")), latest_full_pdf)
         print("Latest copy saved:", Path(latest_full_pdf))
 
-        # Cameras saved to Path(suffix + "_cameras") / "camera_alignment.png"
+        # Cameras saved to Path(suffix + "_cameras") / "camera_alignment.jpg"
         # and Path(suffix + "_cameras") / "camera_alignment.pdf"
 
-        latest_camera_png = f"{latest_suffix}_camera_alignment.png"
-        camera_png_file = Path(suffix + "_cameras") / "camera_alignment.png"
-        if camera_png_file.exists():
-            shutil.copy2(camera_png_file, latest_camera_png)
-            print("Latest copy saved:", Path(latest_camera_png))
+        latest_camera_jpg = f"{latest_suffix}_camera_alignment.jpg"
+        camera_jpg_file = Path(suffix + "_cameras") / "camera_alignment.jpg"
+        if camera_jpg_file.exists():
+            shutil.copy2(camera_jpg_file, latest_camera_jpg)
+            print("Latest copy saved:", Path(latest_camera_jpg))
         latest_camera_pdf = f"{latest_suffix}_camera_alignment.pdf"
         camera_pdf_file = Path(suffix + "_cameras") / "camera_alignment.pdf"
         if camera_pdf_file.exists():
@@ -2270,17 +2270,12 @@ def plot_graph(
             )
 
         if make_pcd_plot:
-            latest_pcd_png = f"{latest_suffix}_point_clouds.png"
-            pcd_png_file = Path(suffix + "_pcd") / "point_clouds.png"
-            if pcd_png_file.exists():
-                shutil.copy2(pcd_png_file, latest_pcd_png)
-                print("Latest copy saved:", Path(latest_pcd_png))
-            latest_pcd_pdf = f"{latest_suffix}_point_clouds.pdf"
-            pcd_pdf_file = Path(suffix + "_pcd") / "point_clouds.pdf"
-            if pcd_pdf_file.exists():
-                shutil.copy2(pcd_pdf_file, latest_pcd_pdf)
-                print("Latest copy saved:", Path(latest_pcd_pdf))
-                tex_out_path = str(Path(latest_pcd_pdf).with_suffix(".tex"))
+            latest_pcd_jpg = f"{latest_suffix}_point_clouds.jpg"
+            pcd_jpg_file = Path(suffix + "_pcd") / "point_clouds.jpg"
+            if pcd_jpg_file.exists():
+                shutil.copy2(pcd_jpg_file, latest_pcd_jpg)
+                print("Latest copy saved:", Path(latest_pcd_jpg))
+                tex_out_path = str(Path(latest_pcd_jpg).with_suffix(".tex"))
                 latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
                 latex_label = (
                     f"fig:pointclouds_{experiment_name}_{dataset_name}"
@@ -2289,10 +2284,15 @@ def plot_graph(
                 )
                 save_figure_tex(
                     tex_out_path,
-                    "Images/04-Results/PointClouds/" + Path(latest_pcd_pdf).name,
+                    "Images/04-Results/PointClouds/" + Path(latest_pcd_jpg).name,
                     caption=latex_caption,
                     label=latex_label,
                 )
+            latest_pcd_pdf = f"{latest_suffix}_point_clouds.pdf"
+            pcd_pdf_file = Path(suffix + "_pcd") / "point_clouds.pdf"
+            if pcd_pdf_file.exists():
+                shutil.copy2(pcd_pdf_file, latest_pcd_pdf)
+                print("Latest copy saved:", Path(latest_pcd_pdf))
 
         latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
         latex_label = f"fig:{experiment_name}_{dataset_name}" if experiment_name else f"fig:{prefix}_{dataset_name}"
@@ -2318,20 +2318,20 @@ def plot_graph(
             shutil.copy2(config_out_file, latest_config)
             print("Latest copy saved:", Path(latest_config))
         if create_pcp:
-            latest_pcp_png = f"{latest_suffix}_pcp.png"
+            latest_pcp_jpg = f"{latest_suffix}_pcp.jpg"
             if Path(pcp_out_file).exists():
-                shutil.copy2(pcp_out_file, latest_pcp_png)
-                print("Latest copy saved:", Path(latest_pcp_png))
+                shutil.copy2(pcp_out_file, latest_pcp_jpg)
+                print("Latest copy saved:", Path(latest_pcp_jpg))
             latest_pcp_pdf = f"{latest_suffix}_pcp.pdf"
             pcp_pdf_file = str(Path(pcp_out_file).with_suffix(".pdf"))
             if Path(pcp_pdf_file).exists():
                 shutil.copy2(pcp_pdf_file, latest_pcp_pdf)
                 print("Latest copy saved:", Path(latest_pcp_pdf))
         if create_combinations:
-            latest_combo_png = f"{latest_suffix}_comparison.png"
+            latest_combo_jpg = f"{latest_suffix}_comparison.jpg"
             if Path(combo_out_file).exists():
-                shutil.copy2(combo_out_file, latest_combo_png)
-                print("Latest copy saved:", Path(latest_combo_png))
+                shutil.copy2(combo_out_file, latest_combo_jpg)
+                print("Latest copy saved:", Path(latest_combo_jpg))
             latest_combo_pdf = f"{latest_suffix}_comparison.pdf"
             combo_pdf_file = str(Path(combo_out_file).with_suffix(".pdf"))
             if Path(combo_pdf_file).exists():

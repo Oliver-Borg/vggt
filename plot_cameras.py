@@ -386,12 +386,12 @@ def plot_extrinsics(
 
     output_path.mkdir(parents=True, exist_ok=True)
 
-    png_path = output_path / "camera_alignment.png"
+    jpg_path = output_path / "camera_alignment.jpg"
     pdf_path = output_path / "camera_alignment.pdf"
 
-    plt.savefig(png_path, dpi=300, bbox_inches="tight")
-    plt.savefig(pdf_path, format="pdf", bbox_inches="tight")
-    print(f"Dashboard saved to {png_path}")
+    plt.savefig(jpg_path, dpi=100, bbox_inches="tight")
+    plt.savefig(pdf_path, format="pdf", bbox_inches="tight", dpi=100)
+    print(f"Dashboard saved to {jpg_path}")
 
 
 if __name__ == "__main__":

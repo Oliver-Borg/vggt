@@ -374,7 +374,7 @@ def plot_point_clouds(
     # Calculate proportional figure height to maintain roughly square subplots
     fig_height = (width / max(1, cols)) * total_rows * aspect_ratio
 
-    fig, axes = plt.subplots(total_rows, cols, figsize=(width, fig_height), dpi=200, squeeze=False)
+    fig, axes = plt.subplots(total_rows, cols, figsize=(width, fig_height), dpi=100, squeeze=False)
 
     # We use very tight wspace/hspace to maximize image space
     fig.subplots_adjust(left=0.01, right=0.99, top=0.99, bottom=0.05, wspace=0.01, hspace=0.1)
@@ -471,10 +471,10 @@ def plot_point_clouds(
                 spine.set_color("black")
                 spine.set_linewidth(spine_width)
 
-    out_png = dest_base / "point_clouds.png"
-    plt.savefig(out_png, bbox_inches="tight")
+    out_jpg = dest_base / "point_clouds.jpg"
+    plt.savefig(out_jpg, bbox_inches="tight", dpi=100)
     out_pdf = dest_base / "point_clouds.pdf"
-    plt.savefig(out_pdf, bbox_inches="tight", dpi=300)
+    plt.savefig(out_pdf, bbox_inches="tight", dpi=100)
     plt.close(fig)
 
-    print(f"Static 2D projections fully rendered and saved to {out_png}")
+    print(f"Static 2D projections fully rendered and saved to {out_jpg}")
