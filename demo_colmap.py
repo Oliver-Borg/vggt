@@ -42,7 +42,13 @@ from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images_square
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import project_world_points_to_cam, unproject_depth_map_to_point_map
-from vggt.utils.helper import create_pixel_coordinate_grid, fps_limit_trues, randomly_limit_trues, uniform_limit_trues
+from vggt.utils.helper import (
+    create_pixel_coordinate_grid,
+    fps_limit_trues,
+    image_freq_limit_trues,
+    randomly_limit_trues,
+    uniform_limit_trues,
+)
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
 from vggt.utils.image_utils import np_rgb
@@ -283,7 +289,8 @@ def filter_nearest(
     invalid_counts = np.zeros_like(conf_mask, dtype=np.int32)
 
     # Loop over each camera
-    for i in range(num_cameras):
+    print("Filtering nearest points...")
+    for i in tqdm.tqdm(range(num_cameras)):
         # Extract indices of currently valid points to map them back later
         valid_idx = np.where(conf_mask)
         world_points = torch.tensor(points_3d[valid_idx], dtype=torch.float32, device=device)
@@ -325,7 +332,7 @@ def filter_nearest(
 
         # Check if projected depth is nearer than the depth map (with a small margin to prevent self-occlusion)
         nearer_mask[valid_mask] = (projected_depths[valid_mask] < (sampled_depths - 1e-3) * strength) & valid_depth_mask
-        print(nearer_mask.sum().item(), invalid_counts.max())
+        # print(nearer_mask.sum().item(), invalid_counts.max())
 
         # Combine masks and update invalid counts using the mapped indices
         # We count points that are validly projected AND nearer
@@ -777,7 +784,35 @@ def run_vggt(
                 if points_to_sample == 0:
                     continue
                 conf_mask[i] = fps_limit_trues(mask, points_to_sample, points_3d[i])
-
+        elif sampling_mode == "imagefreq":
+            conf_mask = image_freq_limit_trues(
+                conf_mask, max_points_for_colmap, images.cpu().numpy(), masks, depth_map, extrinsic, intrinsic
+            )
+        elif sampling_mode == "imagefreqnovis":
+            conf_mask = image_freq_limit_trues(
+                conf_mask,
+                max_points_for_colmap,
+                images.cpu().numpy(),
+                masks,
+                depth_map,
+                extrinsic,
+                intrinsic,
+                use_vis_counts=False,
+            )
+        elif sampling_mode == "imagefreqvoxels":
+            conf_mask = uniform_limit_trues(
+                conf_mask, max_points_for_colmap * 100, points_3d, depth_conf, min_grid_occupancy=3
+            )
+            conf_mask = image_freq_limit_trues(
+                conf_mask,
+                max_points_for_colmap,
+                images.cpu().numpy(),
+                masks,
+                depth_map,
+                extrinsic,
+                intrinsic,
+                use_vis_counts=True,
+            )
 
         points_3d = points_3d[conf_mask]
         points_xyf = points_xyf[conf_mask]

@@ -7,7 +7,19 @@ COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
 COLMAP_MODE = Literal["default", "relaxed"]  # , "interpolated" TODO
-SAMPLING_MODE = Literal["random", "confidence", "voxels", "none", "ba", "vox3", "fps", "imagefps"]
+SAMPLING_MODE = Literal[
+    "random",
+    "confidence",
+    "voxels",
+    "none",
+    "ba",
+    "vox3",
+    "fps",
+    "imagefps",
+    "imagefreq",
+    "imagefreqnovis",
+    "imagefreqvoxels",
+]
 FEATURE_EXTRACTOR = Literal["sift", "sp", "aliked", "aliked+sp", "aliked+sp+sift"]
 
 
