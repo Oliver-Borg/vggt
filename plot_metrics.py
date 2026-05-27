@@ -1649,7 +1649,7 @@ def plot_cameras(
     if "image_mode" in df.columns and df["image_mode"].nunique() > 1:
         split_cols.append("image_mode")
 
-    grouped = df.groupby(split_cols, dropna=False)
+    grouped = df.groupby(split_cols, dropna=False, observed=True)
     groups_data = []
 
     for group_keys, group_df in grouped:
@@ -1735,7 +1735,7 @@ def plot_cameras(
     if not groups_data:
         return
 
-    global_max_rte = None
+    global_max_rte = 1.0
     if not split_dataset_normalization and use_error_colors:
         global_max_rte = 0.0
         for _, series_list, image_names in groups_data:
@@ -2283,7 +2283,7 @@ def plot_graph(
                     use_error_colors=True,
                     max_cols=max_render_cols,
                     split_dataset_normalization=True,
-                    stack_datasets_horizontally=stack_datasets_horizontally,
+                    stack_datasets_horizontally=True,
                 )
 
     if camera_folders is not None and make_pcd_plot:
@@ -2686,7 +2686,7 @@ def plot_table(
     joined_bodies = f"\n{rule_cmd}\n".join(latex_bodies)
     latex_table = f"{header_part}\n{joined_bodies}\n{footer_part}"
 
-    latex_table = latex_table.replace("\\begin{tabular}", "\\small\n\\begin{tabular}")
+    latex_table = latex_table.replace("\\begin{tabular}", "\\footnotesize\n\\begin{tabular}")
 
     # Ensure the unformatted df used for the CSV matches the filtered rows if applicable
     if only_best_rows:
