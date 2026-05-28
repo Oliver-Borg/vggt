@@ -52,7 +52,7 @@ plt.rcParams.update(
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*Calling float on a single element Series.*")
 
 
-def np_rgba(np_arr: np.ndarray, cmap: str) -> np.ndarray:
+def np_rgba(np_arr: np.ndarray, cmap: str, vmax: float | None = None) -> np.ndarray:
     """
     Convert a grayscale image to RGBA using a matplotlib colormap
     Args:
@@ -62,9 +62,12 @@ def np_rgba(np_arr: np.ndarray, cmap: str) -> np.ndarray:
         np.ndarray: The RGBA image
     """
 
-    max_value = np_arr.max()
+    max_value = np_arr.max() if vmax is None else vmax
+    if max_value == 0:
+        max_value = 1e-5
 
     normalised = np_arr.astype(np.float32) / max_value
+    normalised = np.clip(normalised, 0.0, 1.0)
     mapper = plt.get_cmap(cmap)
     rgba = mapper(normalised)
     rgba = rgba * 255
@@ -73,7 +76,7 @@ def np_rgba(np_arr: np.ndarray, cmap: str) -> np.ndarray:
     return rgba
 
 
-def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
+def np_rgb(np_arr: np.ndarray, cmap: str = "viridis", vmax: float | None = None) -> np.ndarray:
     """
     Convert a grayscale image to RGB using a matplotlib colormap
     Args:
@@ -82,7 +85,7 @@ def np_rgb(np_arr: np.ndarray, cmap: str = "viridis") -> np.ndarray:
     Returns:
         np.ndarray: The RGB image
     """
-    rgba = np_rgba(np_arr, cmap)
+    rgba = np_rgba(np_arr, cmap, vmax=vmax)
     return rgba[..., :3]
 
 
@@ -111,7 +114,7 @@ ZOOM_CONFIGS = {
     "bonsai": [(0.15, (0.7, 0.5)), (0.15, (0.5, 0.2)), (0.15, (0.5, 0.8))],
     "kitchen": [(0.15, (0.7, 0.1)), (0.15, (0.6, 0.4)), (0.15, (0.25, 0.6))],
     "counter": [(0.15, (0.5, 0.5)), (0.15, (0.25, 0.75)), (0.15, (0.8, 0.3))],
-    "lego": [(0.15, (0.5, 0.5)), (0.15, (0.5, 0.25)), (0.15, (0.5, 0.75))],
+    "lego": [(0.15, (0.65, 0.5)), (0.15, (0.5, 0.25)), (0.15, (0.5, 0.75))],
     "drums": [(0.15, (0.5, 0.55)), (0.15, (0.25, 0.25)), (0.15, (0.75, 0.45))],
     "ship": [(0.15, (0.25, 0.4)), (0.15, (0.55, 0.5)), (0.15, (0.75, 0.55))],
     "default": [(0.15, (0.5, 0.5)), (0.15, (0.25, 0.25)), (0.15, (0.75, 0.75))],
@@ -229,8 +232,23 @@ regexes = [
         cast=lambda x: "Default" if x == "nomcmc" else "MCMC",
         default="MCMC",
     ),
-    Param(name="camera_src", pattern=r"_(colmapcams)|(vggtcams)|(gtcams)", cast=str, default=None),
-    Param(name="pcd_src", pattern=r"_(colmappcd)|(vggtpcd)|(gtpcd)|(bothpcd)", cast=str, default=None),
+    Param(
+        name="camera_src",
+        pattern=r"_(colmapcams)|(vggtcams)|(gtcams)",
+        cast=lambda x: {"colmapcams": "COLMAP", "vggtcams": "VGGT", "gtcams": "GT"}[x],
+        default=None,
+    ),
+    Param(
+        name="pcd_src",
+        pattern=r"_(colmappcd)|(vggtpcd)|(gtpcd)|(bothpcd)",
+        cast=lambda x: {
+            "colmappcd": "COLMAP",
+            "vggtpcd": "VGGT",
+            "gtpcd": "GT",
+            "bothpcd": "Both",
+        }[x],
+        default=None,
+    ),
     Param(
         name="align_mode",
         pattern=r"_(amlocal)|_(amglobal)",
@@ -507,6 +525,7 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
                 "rre": data["metrics"]["all_rre"],
                 "rte": data["metrics"]["all_rte"],
             },
+            "alignment_scale": data["metrics"]["alignment_scale"],
         }
         if "mean_depth_l1" in data["metrics"]:
             metrics["pred_depth_l1"] = data["metrics"]["mean_depth_l1"]
@@ -1287,6 +1306,52 @@ def _process_single_render(
         raw_metrics = {}
     depth_factors: list[float] = raw_metrics.get("depth_factor", [])
     depth_factor = depth_factors[render_num] if depth_factors else None
+    # if depth_factor is not None:
+    #     alignment_scale = row.get("alignment_scale", 1.0)
+    #     depth_factor *= alignment_scale
+
+    max_cam_dist = None
+    if show_depth:
+        sfm_file_path = row.get("sfm_file_path", "")
+        if sfm_file_path and not pd.isna(sfm_file_path):
+            p_sfm = Path(sfm_file_path)
+            pose_file = p_sfm.parent / "cameras.json"
+
+            if pose_file.exists():
+                try:
+                    poses = load_poses_from_json(pose_file)
+                    if poses:
+                        centers = []
+                        for pose in poses.values():
+                            pose_arr = np.array(pose)
+                            centers.append(pose_arr[:3, 3])
+                        if len(centers) > 1:
+                            centers = np.array(centers)
+                            diffs = centers[:, np.newaxis, :] - centers[np.newaxis, :, :]
+                            dists = np.linalg.norm(diffs, axis=-1)
+                            max_cam_dist = np.max(dists)
+                            if max_cam_dist <= 0:
+                                max_cam_dist = None
+                except Exception as e:
+                    print(f"Failed to load poses for depth normalization: {e}")
+
+    vmaxes = {
+        "lego": 2.5,
+        "drums": 3.0,
+        "ship": 2.5,
+        "bonsai": 1.5,
+        "counter": 5.0,
+        "kitchen": 6.0,
+        "bicycle": 7.0,
+        "garden": 4.0,
+        "stump": 20.0,
+        "default": 1.0,
+    }
+    dataset = row.get("dataset", "default")
+    vmax = vmaxes.get(dataset, 1.0)
+    # print(f"{dataset} Depth factor {depth_factor}")
+    # print(f"{dataset} Max dist {max_cam_dist}")
+    # print(f"{dataset} vmax {vmax}")
 
     try:
 
@@ -1301,7 +1366,7 @@ def _process_single_render(
                 imgs.append(im.crop((left, 0, right, height)))
             return imgs
 
-        def load_and_split(r_file, d_factor):
+        def load_and_split(r_file, d_factor, max_dist=None):
             img = Image.open(r_file).convert("RGB")
             w, h = img.size
             if d_factor is not None:
@@ -1309,20 +1374,31 @@ def _process_single_render(
                     gt_img, pred_img, _, _, depth, _, _ = divide_img(img, splits=7)
                 else:
                     gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
-                depth = np.array(depth).mean(axis=-1)
-                # depth *= depth_factor
-                # median_depth = np.median(depth[depth > 0]) + 1e-5
-                # depth = depth / median_depth / 10
-                # depth = np.clip(depth, 0.0, 1.0)
-                depth_rgb = np_rgb(depth, "jet")
-                depth_rgb[depth == 0, :] = 0
+                depth = np.array(depth).mean(axis=-1) / 255.0
+                depth *= d_factor
+                if max_dist is not None:
+                    depth /= max_dist
+                valid_depths = depth[depth > 0]
+                valid_depths.sort()
+                n_valid = valid_depths.shape[0]
+                zero_depths = depth == 0.0
+                if n_valid > 0:
+                    # median_depth = valid_depths[n_valid // 2] + 1e-5
+                    min_depth = valid_depths[n_valid // 1000]
+                    depth = depth - min_depth
+                    depth = np.maximum(depth, 0.0)
+                    median_depth = np.median(depth[depth > 0]) + 1e-5
+                    depth = depth / median_depth
+                # print("Depth stats", np.min(depth), np.max(depth), np.mean(depth), np.median(depth))
+                depth_rgb = np_rgb(depth, "viridis", vmax=vmax)
+                depth_rgb[zero_depths, :] = 0
                 depth = Image.fromarray(depth_rgb)
             else:
                 gt_img, pred_img, _, _ = divide_img(img, splits=4)
                 depth = None
             return gt_img, pred_img, depth
 
-        gt_img, pred_img, depth = load_and_split(render, depth_factor)
+        gt_img, pred_img, depth = load_and_split(render, depth_factor, max_cam_dist)
         # DEBUGGING
         # w, h = pred_img.size
         # gt_cropped = gt_img.crop((w // 2, 0, w, h))
@@ -1438,7 +1514,7 @@ def _process_single_render(
                 for i, (idx, lbl) in enumerate(zip(idxs_to_show, labels)):
                     if idx < len(render_files):
                         dfactor = depth_factors[idx] if depth_factors else None
-                        alt_gt, alt_pred, alt_depth = load_and_split(render_files[idx], dfactor)
+                        alt_gt, alt_pred, alt_depth = load_and_split(render_files[idx], dfactor, max_cam_dist)
                         if show_gt:
                             alt_pred = alt_gt
                         if alt_depth is not None and show_depth:
@@ -2686,7 +2762,7 @@ def plot_table(
     joined_bodies = f"\n{rule_cmd}\n".join(latex_bodies)
     latex_table = f"{header_part}\n{joined_bodies}\n{footer_part}"
 
-    latex_table = latex_table.replace("\\begin{tabular}", "\\footnotesize\n\\begin{tabular}")
+    latex_table = latex_table.replace("\\begin{tabular}", "\\centering\n\\scriptsize\n\\begin{tabular}")
 
     # Ensure the unformatted df used for the CSV matches the filtered rows if applicable
     if only_best_rows:
