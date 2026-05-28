@@ -472,9 +472,9 @@ def plot_point_clouds(
                 spine.set_linewidth(spine_width)
 
     out_jpg = dest_base / "point_clouds.jpg"
-    plt.savefig(out_jpg, bbox_inches="tight", dpi=100)
+    plt.savefig(out_jpg, bbox_inches="tight", dpi=100, pil_kwargs={"quality": 75, "optimize": True})
     out_pdf = dest_base / "point_clouds.pdf"
-    plt.savefig(out_pdf, bbox_inches="tight", dpi=100)
+    plt.savefig(out_pdf, bbox_inches="tight", dpi=300)
     plt.close(fig)
 
     print(f"Static 2D projections fully rendered and saved to {out_jpg}")

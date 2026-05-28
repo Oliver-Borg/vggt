@@ -235,17 +235,17 @@ regexes = [
     Param(
         name="camera_src",
         pattern=r"_(colmapcams)|(vggtcams)|(gtcams)",
-        cast=lambda x: {"colmapcams": "COLMAP", "vggtcams": "VGGT", "gtcams": "GT"}[x],
+        cast=lambda x: {"colmapcams": "COLMAP Cams", "vggtcams": "VGGT Cams", "gtcams": "GT Cams"}[x],
         default=None,
     ),
     Param(
         name="pcd_src",
         pattern=r"_(colmappcd)|(vggtpcd)|(gtpcd)|(bothpcd)",
         cast=lambda x: {
-            "colmappcd": "COLMAP",
-            "vggtpcd": "VGGT",
-            "gtpcd": "GT",
-            "bothpcd": "Both",
+            "colmappcd": "COLMAP Pcd",
+            "vggtpcd": "VGGT Pcd",
+            "gtpcd": "GT Pcd",
+            "bothpcd": "Both Pcds",
         }[x],
         default=None,
     ),
@@ -1049,7 +1049,14 @@ def main():
     plot_graph(args.name, "default", args.x_axis, args.split_param, args.filter, title=args.title)
 
 
-def save_figure_tex(tex_out_file: str, pdf_path: str, caption: str, label: str, fig_width: float = 1.0):
+def save_figure_tex(
+    tex_out_file: str,
+    highres_path: str,
+    caption: str,
+    label: str,
+    fig_width: float = 1.0,
+    lowres_path: str | None = None,
+):
     """
     Generates a LaTeX figure block and saves it to a specified .tex file.
     """
@@ -1057,7 +1064,18 @@ def save_figure_tex(tex_out_file: str, pdf_path: str, caption: str, label: str, 
     latex_figure = (
         "\\begin{figure}[H]\n"
         "    \\centering\n"
-        f"    \\includegraphics[width={fig_width}\\linewidth]{{{pdf_path}}}\n"
+        "    \\ifhighres\n"
+        f"        \\includegraphics[width={fig_width}\\linewidth]{{{highres_path}}}\n"
+        "    \\else\n"
+        f"        \\includegraphics[width={fig_width}\\linewidth]{{{lowres_path}}}\n"
+        "    \\fi\n"
+        f"    \\caption{{{caption}}}\n"
+        f"    \\label{{{label}}}\n"
+        "\\end{figure}\n"
+    ) if lowres_path is not None else (
+        "\\begin{figure}[H]\n"
+        "    \\centering\n"
+        f"    \\includegraphics[width={fig_width}\\linewidth]{{{highres_path}}}\n"
         f"    \\caption{{{caption}}}\n"
         f"    \\label{{{label}}}\n"
         "\\end{figure}\n"
@@ -1406,7 +1424,7 @@ def _process_single_render(
 
         if show_gt:
             # gt_img = resize_with_padding(gt_img, image_width, image_height)
-            # gt_img = add_text_to_image(gt_img, "Ground Truth", 48)
+            # gt_img = add_text_to_image(gt_img, "Ground Truth", 32)
             # # Add border and padding
             # gt_img = ImageOps.expand(gt_img, border=4, fill="black")
             # gt_img = ImageOps.expand(gt_img, border=20, fill="white")
@@ -1459,8 +1477,6 @@ def _process_single_render(
             else f"{dataset_name}: {config_name}\nPSNR: {psnr_str} | LPIPS: {lpips_str} | SSIM: {ssim_str}"
         )
 
-        pred_img = resize_with_padding(pred_img, image_width, image_height)
-
         c_w = image_width // 3
         c_h = image_height // 3
         composite_parts: list[Image.Image] = []
@@ -1469,20 +1485,21 @@ def _process_single_render(
             z_configs = ZOOM_CONFIGS.get(dataset_name, ZOOM_CONFIGS["default"])
             z_configs.sort(key=lambda x: x[1][1])  # sort by height
             clean_pred = pred_img.copy()
+            orig_w, orig_h = clean_pred.size
             draw = ImageDraw.Draw(pred_img)
             zoom_col = Image.new("RGB", (c_w, image_height), (255, 255, 255))
 
             for i, (w_pct, (cx_pct, cy_pct)) in enumerate(z_configs[:3]):
-                box_w = int(image_width * w_pct)
+                box_w = int(orig_w * w_pct)
                 box_h = int(box_w * (c_h / c_w))
 
-                cx = int(image_width * cx_pct)
-                cy = int(image_height * cy_pct)
+                cx = int(orig_w * cx_pct)
+                cy = int(orig_h * cy_pct)
 
                 left = max(0, cx - box_w // 2)
                 top = max(0, cy - box_h // 2)
-                right = min(image_width, left + box_w)
-                bottom = min(image_height, top + box_h)
+                right = min(orig_w, left + box_w)
+                bottom = min(orig_h, top + box_h)
 
                 draw.rectangle([left, top, right, bottom], outline="red", width=5)
 
@@ -1497,6 +1514,7 @@ def _process_single_render(
 
             composite_parts.append(zoom_col)
 
+        pred_img = resize_with_padding(pred_img, image_width, image_height)
         composite_parts.append(pred_img)
 
         if show_alt_frames:
@@ -1542,7 +1560,7 @@ def _process_single_render(
                 final_img.paste(part, (curr_x, 0))
                 curr_x += part.width
 
-        final_img = add_text_to_image(final_img, label_text, 48)
+        final_img = add_text_to_image(final_img, label_text, 32)
 
         # Draw a black border around the configuration
         final_img = ImageOps.expand(final_img, border=4, fill="black")
@@ -1609,8 +1627,8 @@ def create_render_figure(
         cols_per_dataset = 1
         max_cols = len(unique_datasets)
 
-    image_width = 1200
-    image_height = 800 if any({"bicycle", "bonsai"} & set(unique_datasets)) else 1200
+    image_width = 600
+    image_height = 400 if any({"bicycle", "bonsai"} & set(unique_datasets)) else 600
 
     for dataset in unique_datasets:
         dataset_df = df[df["dataset"] == dataset]
@@ -1669,11 +1687,14 @@ def create_render_figure(
         stacked_img = _stack_images_with_wrap(dataset_columns, max_cols=1)
 
     out_file = dest_base / "stacked_renders.jpg"
-    stacked_img.save(out_file)
+    jpg_scaling_factor = 2
+    stacked_img.resize(
+        (stacked_img.width // jpg_scaling_factor, stacked_img.height // jpg_scaling_factor)
+    ).save(out_file, quality=75, optimize=True)
     print(f"Saved stacked renders to {out_file}")
 
     out_pdf = dest_base / "stacked_renders.pdf"
-    stacked_img.save(out_pdf, "PDF", resolution=100.0)
+    stacked_img.save(out_pdf, "PDF", resolution=100.0, quality=100, optimize=True)
     print(f"Saved stacked renders PDF to {out_pdf}")
 
     if dataset_name and experiment_name:
@@ -1701,6 +1722,7 @@ def create_render_figure(
             "Images/04-Results/Renders/" + Path(latest_render_pdf).name,
             caption=latex_caption,
             label=latex_label,
+            lowres_path="Images/04-Results/Renders/" + Path(latest_render_jpg).name,
         )
         print("LaTeX figure saved:", Path(tex_out_path))
 
@@ -2410,6 +2432,12 @@ def plot_graph(
             if pcd_jpg_file.exists():
                 shutil.copy2(pcd_jpg_file, latest_pcd_jpg)
                 print("Latest copy saved:", Path(latest_pcd_jpg))
+            latest_pcd_pdf = f"{latest_suffix}_point_clouds.pdf"
+            pcd_pdf_file = Path(suffix + "_pcd") / "point_clouds.pdf"
+
+            if pcd_pdf_file.exists():
+                shutil.copy2(pcd_pdf_file, latest_pcd_pdf)
+                print("Latest copy saved:", Path(latest_pcd_pdf))
                 tex_out_path = str(Path(latest_pcd_jpg).with_suffix(".tex"))
                 latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
                 latex_label = (
@@ -2419,15 +2447,13 @@ def plot_graph(
                 )
                 save_figure_tex(
                     tex_out_path,
-                    "Images/04-Results/PointClouds/" + Path(latest_pcd_jpg).name,
+                    "Images/04-Results/PointClouds/" + Path(latest_pcd_pdf).name,
                     caption=latex_caption,
                     label=latex_label,
+                    lowres_path=(
+                        "Images/04-Results/PointClouds/" + Path(latest_pcd_jpg).name if pcd_jpg_file.exists() else None
+                    ),
                 )
-            latest_pcd_pdf = f"{latest_suffix}_point_clouds.pdf"
-            pcd_pdf_file = Path(suffix + "_pcd") / "point_clouds.pdf"
-            if pcd_pdf_file.exists():
-                shutil.copy2(pcd_pdf_file, latest_pcd_pdf)
-                print("Latest copy saved:", Path(latest_pcd_pdf))
 
         latex_caption = f"{title} ({str(dataset_name).title()})." if title else f"{prefix} - {dataset_name}."
         latex_label = f"fig:{experiment_name}_{dataset_name}" if experiment_name else f"fig:{prefix}_{dataset_name}"
