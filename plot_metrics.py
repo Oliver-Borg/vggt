@@ -1062,23 +1062,27 @@ def save_figure_tex(
     """
 
     latex_figure = (
-        "\\begin{figure}[H]\n"
-        "    \\centering\n"
-        "    \\ifhighres\n"
-        f"        \\includegraphics[width={fig_width}\\linewidth]{{{highres_path}}}\n"
-        "    \\else\n"
-        f"        \\includegraphics[width={fig_width}\\linewidth]{{{lowres_path}}}\n"
-        "    \\fi\n"
-        f"    \\caption{{{caption}}}\n"
-        f"    \\label{{{label}}}\n"
-        "\\end{figure}\n"
-    ) if lowres_path is not None else (
-        "\\begin{figure}[H]\n"
-        "    \\centering\n"
-        f"    \\includegraphics[width={fig_width}\\linewidth]{{{highres_path}}}\n"
-        f"    \\caption{{{caption}}}\n"
-        f"    \\label{{{label}}}\n"
-        "\\end{figure}\n"
+        (
+            "\\begin{figure}[H]\n"
+            "    \\centering\n"
+            "    \\ifhighres\n"
+            f"        \\includegraphics[width={fig_width}\\linewidth]{{{highres_path}}}\n"
+            "    \\else\n"
+            f"        \\includegraphics[width={fig_width}\\linewidth]{{{lowres_path}}}\n"
+            "    \\fi\n"
+            f"    \\caption{{{caption}}}\n"
+            f"    \\label{{{label}}}\n"
+            "\\end{figure}\n"
+        )
+        if lowres_path is not None
+        else (
+            "\\begin{figure}[H]\n"
+            "    \\centering\n"
+            f"    \\includegraphics[width={fig_width}\\linewidth]{{{highres_path}}}\n"
+            f"    \\caption{{{caption}}}\n"
+            f"    \\label{{{label}}}\n"
+            "\\end{figure}\n"
+        )
     )
 
     os.makedirs(os.path.dirname(tex_out_file), exist_ok=True)
@@ -1434,6 +1438,9 @@ def _process_single_render(
             # TODO Add GT depth
             show_depth = False
 
+        # Store original prediction to extract clean crops before depth mutation
+        original_pred = pred_img.copy()
+
         # TODO Decide if we want to do one of these
         # Paste a small version of the diff img in the bottom left corner of the pred_img
         # diff_img = diff_img.resize((diff_img.width // 4, diff_img.height // 4))
@@ -1443,8 +1450,8 @@ def _process_single_render(
             # depth = depth.resize((depth.width // 3, depth.height // 3))
             # pred_img.paste(depth, (0, pred_img.height - depth.height))
             w, h = pred_img.size
-            depth = depth.crop((w // 2, 0, w, h))
-            pred_img.paste(depth, (w // 2, 0))
+            depth_right = depth.crop((w // 2, 0, w, h))
+            pred_img.paste(depth_right, (w // 2, 0))
 
         # Crop half the image on the right and paste it
         # w, h = pred_img.size
@@ -1484,7 +1491,7 @@ def _process_single_render(
         if show_zoom:
             z_configs = ZOOM_CONFIGS.get(dataset_name, ZOOM_CONFIGS["default"])
             z_configs.sort(key=lambda x: x[1][1])  # sort by height
-            clean_pred = pred_img.copy()
+            clean_pred = original_pred
             orig_w, orig_h = clean_pred.size
             draw = ImageDraw.Draw(pred_img)
             zoom_col = Image.new("RGB", (c_w, image_height), (255, 255, 255))
@@ -1504,6 +1511,12 @@ def _process_single_render(
                 draw.rectangle([left, top, right, bottom], outline="red", width=5)
 
                 crop = clean_pred.crop((left, top, right, bottom))
+
+                if depth is not None and show_depth:
+                    crop_depth = depth.crop((left, top, right, bottom))
+                    cw, ch = crop.size
+                    crop_depth_right = crop_depth.crop((cw // 2, 0, cw, ch))
+                    crop.paste(crop_depth_right, (cw // 2, 0))
 
                 # Resize keeping room for a 5-pixel border (10px total width/height)
                 crop = resize_with_padding(crop, c_w - 10, c_h - 10)
@@ -1688,9 +1701,9 @@ def create_render_figure(
 
     out_file = dest_base / "stacked_renders.jpg"
     jpg_scaling_factor = 2
-    stacked_img.resize(
-        (stacked_img.width // jpg_scaling_factor, stacked_img.height // jpg_scaling_factor)
-    ).save(out_file, quality=75, optimize=True)
+    stacked_img.resize((stacked_img.width // jpg_scaling_factor, stacked_img.height // jpg_scaling_factor)).save(
+        out_file, quality=75, optimize=True
+    )
     print(f"Saved stacked renders to {out_file}")
 
     out_pdf = dest_base / "stacked_renders.pdf"
