@@ -1,5 +1,5 @@
 import argparse
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import glob
 import itertools
 import json
@@ -118,7 +118,7 @@ regexes = [
     Param(name="optimisation_neighbourhood", pattern=r"_optn(\d+)", cast=int, default=10),
     Param(
         name="image_mode",
-        pattern=r"_(shuffle)|_(distributed)|_(mfps)|_(farthestpose)|_(nearestpose)",
+        pattern=r"_(shuffle)|_(distributed)|_(mfps)|_(farthestpose)|_(nearestpose)|_(minfarthestpose)|_(minnearestpose)",
         cast=str,
         default="",
     ),
@@ -1364,15 +1364,18 @@ def _process_single_render(
         # pred_img.paste(diff_img, (w // 2, 0))
 
         # Prepare text label
-        config_name = (
-            str(row.get("plot_series", folder_name))
-            .replace("colmap", "COLMAP")
-            .replace("vggt", "VGGT")
-            .replace("gt", "GT")
-            .replace("combined", "Combined")
-        )
-        if x_axis and pd.notna(row.get(x_axis)):
-            config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+        if pd.notna(row.get("series_label_override")):
+            config_name = str(row.get("series_label_override"))
+        else:
+            config_name = (
+                str(row.get("plot_series", folder_name))
+                .replace("colmap", "COLMAP")
+                .replace("vggt", "VGGT")
+                .replace("gt", "GT")
+                .replace("combined", "Combined")
+            )
+            if x_axis and pd.notna(row.get(x_axis)):
+                config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
         # Use the aggregated metrics across all frames for the label
         psnr_val = row.get("psnr")
@@ -1699,38 +1702,50 @@ def plot_cameras(
                     continue
                 seen_pose_files.add(pose_file)
 
-                config_name = (
-                    str(row.get("plot_series", p.parent.name))
-                    .replace("colmap", "COLMAP")
-                    .replace("vggt", "VGGT")
-                    .replace("gt", "GT")
-                    .replace("combined", "Combined")
-                )
-                if x_axis and pd.notna(row.get(x_axis)):
-                    config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+                if pd.notna(row.get("series_label_override")):
+                    config_name = str(row.get("series_label_override"))
+                else:
+                    config_name = (
+                        str(row.get("plot_series", p.parent.name))
+                        .replace("colmap", "COLMAP")
+                        .replace("vggt", "VGGT")
+                        .replace("gt", "GT")
+                        .replace("combined", "Combined")
+                    )
+                    if x_axis and pd.notna(row.get(x_axis)):
+                        config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
                 # Prepend the dataset identifier
                 dataset_name = row.get("dataset", "")
                 if dataset_name:
                     config_name = f"{dataset_name}: {config_name}"
 
+                seed = row.get("seed", "")
+                image_mode = row.get("image_mode", "")
+                num_images = row.get("num_images", "")
+
                 color = cmap(len(series_list) + 1) if varying_colors else (1.0, 0.0, 0.0, 1.0)
                 color = (*color[:3], 1.0)
                 series = CameraSeries(
-                    label=config_name, colour=color, poses=load_poses_from_json(pose_file), gt_poses=best_gt_poses
+                    label=config_name,
+                    colour=color,
+                    poses=load_poses_from_json(pose_file),
+                    gt_poses=best_gt_poses,
+                    image_names=list(best_gt_poses.keys()),  # Temporary: need to update to num_images image_names
+                    image_name_key=f"{dataset_name}_{seed}_{image_mode}_{num_images}"
                 )
                 series_list.append(series)
 
         if series_list:
-            image_names = []
-            largest_series = series_list[0]
+            image_name_mapping = defaultdict(list)
             for series in series_list:
-                image_names.extend(series.poses.keys())
-                if len(series.poses) > len(largest_series.poses):
-                    largest_series = series
-            image_names = list(set(image_names))
+                if len(image_name_mapping[series.image_name_key]) < len(series.poses.keys()):
+                    image_name_mapping[series.image_name_key] = list(series.poses.keys())
 
-            groups_data.append((group_suffix, series_list, image_names))
+            for series in series_list:
+                series.image_names = image_name_mapping[series.image_name_key]
+
+            groups_data.append((group_suffix, series_list))
 
     if not groups_data:
         return
@@ -1739,9 +1754,9 @@ def plot_cameras(
     if not split_dataset_normalization and use_error_colors:
         global_max_rte = 0.0
         for _, series_list, image_names in groups_data:
-            R_align = _get_global_alignment(series_list, image_names)
+            R_align = _get_global_alignment(series_list)
             if R_align is not None:
-                _, local_max = _calculate_all_errors(series_list, image_names, R_align)
+                _, local_max = _calculate_all_errors(series_list, R_align)
                 global_max_rte = max(global_max_rte, local_max)
 
     plot_extrinsics(
@@ -1832,6 +1847,12 @@ def plot_graph(
         print(f"Invalid split cols: {set(split_cols) - set(valid_split_cols)}")
 
     sort_cols = valid_split_cols.copy()
+    if (
+        "series_label_override" in df.columns
+        and "series_label_override" not in sort_cols
+        and df["series_label_override"].notna().any()
+    ):
+        sort_cols.insert(0, "series_label_override")
     if "choice" in df.columns:
         sort_cols.append("choice")
     elif "method" in df.columns:
@@ -1844,15 +1865,23 @@ def plot_graph(
         df = df.sort_values(by=sort_cols)
 
     if valid_split_cols:
-        split_val_series = df[valid_split_cols[0]].map(lambda x: str(x) if pd.notnull(x) else "")
-        for col in valid_split_cols[1:]:
-            split_val_series = split_val_series + " | " + df[col].map(lambda x: str(x) if pd.notnull(x) else "")
+        if "series_label_override" in valid_split_cols:
+            df["plot_series"] = df["series_label_override"].fillna(df["method"])
+            unique_splits = df["plot_series"].unique().tolist()
+        else:
+            split_val_series = df[valid_split_cols[0]].map(lambda x: str(x) if pd.notnull(x) else "")
+            for col in valid_split_cols[1:]:
+                split_val_series = split_val_series + " | " + df[col].map(lambda x: str(x) if pd.notnull(x) else "")
 
-        df["plot_series"] = df["method"] + " | " + split_val_series
-        unique_splits = split_val_series.unique().tolist()
+            df["plot_series"] = df["method"] + " | " + split_val_series
+            unique_splits = split_val_series.unique().tolist()
     else:
-        df["plot_series"] = df["method"]
-        unique_splits = ["colmap", "vggt", "gt", "combined"]
+        if "series_label_override" in df.columns and df["series_label_override"].notna().any():
+            df["plot_series"] = df["series_label_override"].fillna(df["method"])
+            unique_splits = df["plot_series"].unique().tolist()
+        else:
+            df["plot_series"] = df["method"]
+            unique_splits = ["colmap", "vggt", "gt", "combined"]
 
     unique_series = df["plot_series"].unique().tolist()
 
@@ -1916,32 +1945,28 @@ def plot_graph(
     hatch_map = {}
 
     for series in unique_series:
-        if series.startswith("colmap"):
-            method = "colmap"
-        elif series.startswith("vggt"):
-            method = "vggt"
-        elif series.startswith("gt"):
-            method = "gt"
-        elif series.startswith("combined"):
-            method = "combined"
-        else:
-            method = "vggt"
+        method_matches = df[df["plot_series"] == series]["method"]
+        method = method_matches.iloc[0] if not method_matches.empty else "vggt"
 
         if shared_colors:
-            if valid_split_cols:
+            if valid_split_cols and "series_label_override" not in valid_split_cols:
                 # Safely split purely on the divider to extract the variation string
                 parts = series.split(" | ", 1)
                 val_str = parts[1] if len(parts) > 1 else parts[0]
                 original_val = next((v for v in unique_splits if str(v) == val_str), None)
                 color_map[series] = val_to_color.get(original_val, "#333333")
+            elif ("series_label_override" in valid_split_cols) or (
+                "series_label_override" in df.columns and df["series_label_override"].notna().any()
+            ):
+                color_map[series] = val_to_color.get(series, "#333333")
             else:
                 color_map[series] = val_to_color.get(method, "#333333")
         else:
             color_map[series] = val_to_color.get(series, "#333333")
 
-        marker_map[series] = style_config[method]["marker"]
-        dash_map[series] = style_config[method]["dashes"]
-        hatch_map[series] = style_config[method]["hatch"]
+        marker_map[series] = style_config.get(method, style_config["vggt"])["marker"]
+        dash_map[series] = style_config.get(method, style_config["vggt"])["dashes"]
+        hatch_map[series] = style_config.get(method, style_config["vggt"])["hatch"]
 
     colmap_means_by_series = {}
     colmap_min_by_series = {}
@@ -2303,7 +2328,7 @@ def plot_graph(
                     use_error_colors=True,
                     max_cols=max_render_cols,
                     split_dataset_normalization=True,
-                    stack_datasets_horizontally=True,
+                    stack_datasets_horizontally=stack_datasets_horizontally,
                 )
 
     if camera_folders is not None and make_pcd_plot:
@@ -2497,6 +2522,10 @@ def plot_table(
     else:
         split_cols = []
 
+    if "series_label_override" in df.columns and df["series_label_override"].notna().any():
+        if "series_label_override" not in columns_to_include:
+            columns_to_include.append("series_label_override")
+
     columns_to_include.extend(metric_keys)
 
     # Remove duplicates
@@ -2505,6 +2534,8 @@ def plot_table(
     columns_to_include = [col for col in columns_to_include if col in df.columns]
 
     non_metric_cols = [col for col in columns_to_include if col not in metric_keys or col in split_cols]
+    if "series_label_override" in columns_to_include and "series_label_override" not in non_metric_cols:
+        non_metric_cols.append("series_label_override")
 
     # Take the mean of all metrics based on non_metric_cols
     df_for_agg = df[columns_to_include]
@@ -2518,6 +2549,9 @@ def plot_table(
 
     # Sort the dataframe
     sort_cols = []
+    if "series_label_override" in df_table.columns:
+        sort_cols.append("series_label_override")
+
     if split_dataset == "individual" and "dataset" in df_table.columns:
         sort_cols.append("dataset")
     elif split_dataset == "collection" and "dataset_collection" in df_table.columns:
@@ -2548,6 +2582,9 @@ def plot_table(
                 df_table[col] = df_table[col].astype("Int64")
 
     rename_map = {}
+    if "series_label_override" in df_table.columns:
+        rename_map["series_label_override"] = "Series Label"
+
     if "choice" in df_table.columns:
         rename_map["choice"] = "Choice"
 

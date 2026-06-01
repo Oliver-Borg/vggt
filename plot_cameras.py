@@ -18,17 +18,22 @@ class CameraSeries:
     colour: tuple[float, float, float] | tuple[float, float, float, float]
     poses: dict[str, np.ndarray]
     gt_poses: dict[str, np.ndarray]
+    image_names: list[str]
+    image_name_key: str = "default"
 
 
 def _get_global_alignment(
     series_list: list[CameraSeries],
-    image_names: list[str] | None,
 ) -> np.ndarray | None:
     """Gathers all poses and computes a single alignment rotation."""
     all_poses_for_alignment = []
     for series in series_list:
-        all_poses_for_alignment.extend(v for k, v in series.gt_poses.items() if image_names is None or k in image_names)
-        all_poses_for_alignment.extend(v for k, v in series.poses.items() if image_names is None or k in image_names)
+        all_poses_for_alignment.extend(
+            v for k, v in series.gt_poses.items() if series.image_names is None or k in series.image_names
+        )
+        all_poses_for_alignment.extend(
+            v for k, v in series.poses.items() if series.image_names is None or k in series.image_names
+        )
 
     if not all_poses_for_alignment:
         return None
@@ -38,7 +43,6 @@ def _get_global_alignment(
 
 def _calculate_all_errors(
     series_list: list[CameraSeries],
-    image_names: list[str] | None,
     R_align_global: np.ndarray,
 ) -> tuple[defaultdict, float]:
     """Calculates all RTEs for all series given a global alignment."""
@@ -49,7 +53,9 @@ def _calculate_all_errors(
         series_errors = {}
         # Align GT centers once for this specific series
         gt_centers_aligned = {
-            k: R_align_global @ v[:3, 3] for k, v in series.gt_poses.items() if image_names is None or k in image_names
+            k: R_align_global @ v[:3, 3]
+            for k, v in series.gt_poses.items()
+            if series.image_names is None or k in series.image_names
         }
 
         for k, v in series.poses.items():
@@ -236,7 +242,7 @@ def plot_cameras(
 
 @profile
 def plot_extrinsics(
-    groups_data: list[tuple[str, list[CameraSeries], list[str] | None]],
+    groups_data: list[tuple[str, list[CameraSeries]]],
     output_path: Path,
     max_cols: int = 3,
     use_error_colors: bool = False,
@@ -247,7 +253,7 @@ def plot_extrinsics(
         return
 
     group_layouts = []
-    for name, series_list, img_names in groups_data:
+    for name, series_list in groups_data:
         num_series = len(series_list)
         cols = min(num_series, max_cols)
         rows = (num_series + cols - 1) // cols if cols > 0 else 1
@@ -273,14 +279,14 @@ def plot_extrinsics(
     row_offset = 0
     col_offset = 0
 
-    for g_idx, (group_name, series_list, image_names) in enumerate(groups_data):
+    for g_idx, (group_name, series_list) in enumerate(groups_data):
         r_g, c_g = group_layouts[g_idx]
         if len(series_list) == 0:
             continue
 
-        R_align_global = _get_global_alignment(series_list, image_names)
+        R_align_global = _get_global_alignment(series_list)
         if use_error_colors and R_align_global is not None:
-            all_errors, group_max_rte = _calculate_all_errors(series_list, image_names, R_align_global)
+            all_errors, group_max_rte = _calculate_all_errors(series_list, R_align_global)
             if max_error_override is not None:
                 group_max_rte = max_error_override
         else:
@@ -308,7 +314,7 @@ def plot_extrinsics(
 
             # Add GT series
             for k, v in series.gt_poses.items():
-                if image_names is not None and k not in image_names:
+                if series.image_names is not None and k not in series.image_names:
                     continue
                 combined_poses[gt_label + k] = v
                 colours[gt_label + k] = gt_colour
@@ -316,7 +322,7 @@ def plot_extrinsics(
 
             # Add the current series being compared
             for k, v in series.poses.items():
-                if image_names is not None and k not in image_names:
+                if series.image_names is not None and k not in series.image_names:
                     continue
                 combined_poses[series.label + k] = v
                 if use_error_colors:
