@@ -73,7 +73,7 @@ dataset_collections = {
 }
 
 ZOOM_CONFIGS = {
-    "bicycle": [(0.15, (0.6, 0.5)), (0.15, (0.1, 0.2)), (0.15, (0.6, 0.1))],
+    "bicycle": [(0.15, (0.85, 0.5)), (0.15, (0.3, 0.45)), (0.15, (0.6, 0.2))],
     "garden": [(0.15, (0.8, 0.2)), (0.15, (0.5, 0.3)), (0.15, (0.5, 0.5))],
     "stump": [(0.15, (0.4, 0.1)), (0.15, (0.75, 0.5)), (0.15, (0.25, 0.75))],
     "bonsai": [(0.15, (0.7, 0.5)), (0.15, (0.5, 0.2)), (0.15, (0.5, 0.8))],
@@ -180,10 +180,25 @@ regexes = [
     ),
     Param(
         name="depth_conf_mode",
-        pattern=r"_conf(standard)|_conf(sigmoid)|_conf(shifted)",
-        cast=str,
+        pattern=r"_conf(standard)|_conf(sigmoid)|_conf(shifted)|_conf(scaled)|_conf(scaleshifted)|_conf(sigshifted)",
+        cast=lambda x: {
+            "standard": "Standard",
+            "sigmoid": "Sigmoid",
+            "shifted": "Standard Shifted",
+            "scaled": "Scaled",
+            "scaleshifted": "Scaled Shifted",
+            "sigshifted": "Sigmoid Shifted",
+        }[x],
         default="",
     ),
+    Param(
+        "depth_conf_shifted",
+        pattern=r"_conf(.*shifted)",
+        cast=lambda x: str(bool(x)),
+        default="False",
+    ),
+    Param("loss_multiplier", pattern=r"_lossm(\d+\.\d+)", cast=float, default=1.0),
+    Param("pose_loss_multiplier", pattern=r"_plossm(\d+\.\d+)", cast=float, default=1.0),
     Param(name="choice", pattern=r"(vggt)|(colmap)|(gt)_outputs", cast=str),
     Param(name="dataset", pattern=r"(?!)", cast=str, default="", skip_match=True),
     Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
@@ -301,7 +316,7 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
 def load_metrics_to_df(
     scene_name: str | list[str],
     methods: list[str],
-    folders: list[tuple[str, str]] | None = None,
+    folders: list[tuple[str, str, str | None]] | None = None,
     val_steps: list[int] = [7000],
 ) -> pd.DataFrame:
     """
@@ -334,6 +349,7 @@ def load_metrics_to_df(
     records: dict[int | tuple[str, str], dict] = {}
     sfm_folders = [pair[0] for pair in folders] if folders is not None else []
     gsplat_folders = [pair[1] for pair in folders] if folders is not None else []
+    series_label_overrides = [pair[2] for pair in folders] if folders is not None else []
 
     # (source_name, glob_pattern, json_loader_func)
     sources = [
@@ -346,6 +362,7 @@ def load_metrics_to_df(
             ),
             _parse_gsplat_json,
             gsplat_folders,
+            series_label_overrides,
         ]
         for i in val_steps
     ] + [
@@ -354,13 +371,14 @@ def load_metrics_to_df(
             os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"),
             _parse_sfm_json,
             sfm_folders,
+            series_label_overrides,
         ],
     ]
     i = 0
 
     for scene_name in scene_names:
         for method in methods:
-            for source_name, path_template, parser, source_folders in sources:
+            for source_name, path_template, parser, source_folders, series_labels in sources:
                 pattern = path_template.format(method=method, scene=scene_name)
 
                 for file_path in glob.glob(pattern):
@@ -380,8 +398,10 @@ def load_metrics_to_df(
                         if folders is not None and source_folder in source_folders:
                             index = source_folders.index(source_folder)
                             key = folders[index]
+                            series_label_override = series_labels[index]
                         else:
                             key = (str(i), str(i))
+                            series_label_override = None
 
                         # For gsplat, the folder is 3 levels up from the json file in the original code logic
                         if source_name == "gsplat":
@@ -408,6 +428,8 @@ def load_metrics_to_df(
                             "dataset": "".join([c for c in scene_name.replace("_", " ") if not c.isnumeric()]).strip(),
                         }
 
+                        record["series_label_override"] = series_label_override
+
                         coll = "other"
                         for k, v in dataset_collections.items():
                             if record["dataset"] in v:
@@ -424,7 +446,7 @@ def load_metrics_to_df(
                             records[key] = record
                         else:
                             updated = False
-                            for sfm_folder, gsplat_folder in folders or []:
+                            for sfm_folder, gsplat_folder, series_label_override in folders or []:
                                 if sfm_folder == source_folder:
                                     for step in val_steps:
                                         key1 = (sfm_folder, gsplat_folder + f"_val_step{step - 1}.json")
@@ -1200,7 +1222,7 @@ def _process_single_render(
         list(render_src_dir.glob(f"{p.stem}_*.png"))
     )
 
-    if not render_files:
+    if not render_files or render_num >= len(render_files):
         return images
 
     render = render_files[render_num]
@@ -1272,6 +1294,7 @@ def _process_single_render(
         def load_and_split(r_file, d_factor, max_dist=None):
             img = Image.open(r_file).convert("RGB")
             w, h = img.size
+            raw_depth = np.zeros((h, w), dtype=np.float32)
             if d_factor is not None:
                 if w % 7 == 0 and w % 5 != 0:
                     gt_img, pred_img, _, _, depth, _, _ = divide_img(img, splits=7)
@@ -1292,6 +1315,7 @@ def _process_single_render(
                     depth = np.maximum(depth, 0.0)
                     median_depth = np.median(depth[depth > 0]) + 1e-5
                     depth = depth / median_depth
+                raw_depth = depth
                 # print("Depth stats", np.min(depth), np.max(depth), np.mean(depth), np.median(depth))
                 depth_rgb = np_rgb(depth, "viridis", vmax=vmax)
                 depth_rgb[zero_depths, :] = 0
@@ -1299,9 +1323,9 @@ def _process_single_render(
             else:
                 gt_img, pred_img, _, _ = divide_img(img, splits=4)
                 depth = None
-            return gt_img, pred_img, depth
+            return gt_img, pred_img, depth, raw_depth
 
-        gt_img, pred_img, depth = load_and_split(render, depth_factor, max_cam_dist)
+        gt_img, pred_img, depth, raw_depth = load_and_split(render, depth_factor, max_cam_dist)
         # DEBUGGING
         # w, h = pred_img.size
         # gt_cropped = gt_img.crop((w // 2, 0, w, h))
@@ -1375,7 +1399,9 @@ def _process_single_render(
             clean_pred = original_pred
             orig_w, orig_h = clean_pred.size
             draw = ImageDraw.Draw(pred_img)
-            zoom_col = Image.new("RGB", (c_w, image_height), (255, 255, 255))
+
+            zoom_col_w = c_w * 2 if (depth is not None and show_depth) else c_w
+            zoom_col = Image.new("RGB", (zoom_col_w, image_height), (255, 255, 255))
 
             for i, (w_pct, (cx_pct, cy_pct)) in enumerate(z_configs[:3]):
                 box_w = int(orig_w * w_pct)
@@ -1394,13 +1420,17 @@ def _process_single_render(
                 crop = clean_pred.crop((left, top, right, bottom))
 
                 if depth is not None and show_depth:
-                    crop_depth = depth.crop((left, top, right, bottom))
+                    crop_depth = raw_depth[top:bottom, left:right]
+                    crop_depth = (crop_depth - np.min(crop_depth)) / (np.max(crop_depth) - np.min(crop_depth) + 1e-5)
+                    crop_depth = Image.fromarray(np_rgb(crop_depth, "viridis"))
                     cw, ch = crop.size
-                    crop_depth_right = crop_depth.crop((cw // 2, 0, cw, ch))
-                    crop.paste(crop_depth_right, (cw // 2, 0))
+                    side_by_side = Image.new("RGB", (cw * 2, ch))
+                    side_by_side.paste(crop, (0, 0))
+                    side_by_side.paste(crop_depth, (cw, 0))
+                    crop = side_by_side
 
                 # Resize keeping room for a 5-pixel border (10px total width/height)
-                crop = resize_with_padding(crop, c_w - 10, c_h - 10)
+                crop = resize_with_padding(crop, zoom_col_w - 10, c_h - 10)
                 # Add red border
                 crop = ImageOps.expand(crop, border=5, fill="red")
 
@@ -1426,7 +1456,7 @@ def _process_single_render(
                 for i, (idx, lbl) in enumerate(zip(idxs_to_show, labels)):
                     if idx < len(render_files):
                         dfactor = depth_factors[idx] if depth_factors else None
-                        alt_gt, alt_pred, alt_depth = load_and_split(render_files[idx], dfactor, max_cam_dist)
+                        alt_gt, alt_pred, alt_depth, _ = load_and_split(render_files[idx], dfactor, max_cam_dist)
                         if show_gt:
                             alt_pred = alt_gt
                         if alt_depth is not None and show_depth:
@@ -2279,6 +2309,9 @@ def plot_graph(
     if camera_folders is not None and make_pcd_plot:
         pcd_df = df[df["input_folder"].isin(camera_folders)]
         if not pcd_df.empty:
+            pcd_df = pcd_df.assign(
+                input_folder=pd.Categorical(pcd_df["input_folder"], categories=list(set(camera_folders)), ordered=True)
+            ).sort_values("input_folder")
             plot_point_clouds(pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols * 2)
 
     if dataset_name and experiment_name:
