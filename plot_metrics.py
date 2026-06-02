@@ -2677,7 +2677,8 @@ def plot_table(
     inv_rename_map = {v: k for k, v in rename_map.items()}
 
     # Dynamic variables for LaTeX table
-    latex_caption = f"{title} ({str(dataset_name).title()})" if title else f"{prefix} - {dataset_name}"
+    base_caption = f"{title} ({str(dataset_name).title()})" if title else f"{prefix} - {dataset_name}"
+    latex_caption = f"\\ifdefined\\customcaption \\customcaption \\else {base_caption} \\fi"
     latex_label = f"tab:{experiment_name}_{dataset_name}" if experiment_name else f"tab:{prefix}_{dataset_name}"
 
     # Determine split keys for formatting groups

@@ -129,7 +129,7 @@ def save_figure_tex(
             "    \\else\n"
             f"        \\includegraphics[width={fig_width}\\linewidth]{{{lowres_path}}}\n"
             "    \\fi\n"
-            f"    \\caption{{{caption}}}\n"
+            f"    \\caption{{\\ifdefined\\customcaption \\customcaption \\else {caption} \\fi}}\n"
             f"    \\label{{{label}}}\n"
             "\\end{figure}\n"
         )
@@ -138,7 +138,7 @@ def save_figure_tex(
             "\\begin{figure}[H]\n"
             "    \\centering\n"
             f"    \\includegraphics[width={fig_width}\\linewidth]{{{highres_path}}}\n"
-            f"    \\caption{{{caption}}}\n"
+            f"    \\caption{{\\ifdefined\\customcaption \\customcaption \\else {caption} \\fi}}\n"
             f"    \\label{{{label}}}\n"
             "\\end{figure}\n"
         )
