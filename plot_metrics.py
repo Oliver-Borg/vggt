@@ -203,7 +203,7 @@ regexes = [
     Param(name="dataset", pattern=r"(?!)", cast=str, default="", skip_match=True),
     Param(name="camera_type", pattern=r"_m(radial)|(pinhole)", cast=str),
     Param(name="copy_mode", pattern=r"_(crop)|(tiles)|(square)", cast=str, default=None),
-    Param(name="val_step", pattern=r"val_step(\d+)", cast=int, default=None),
+    Param(name="val_step", pattern=r"val_step(\d+)|train_step(\d+)", cast=int, default=None),
     Param(name="num_steps", pattern=r"steps(\d+)", cast=int, default=None),
     Param(name="colmap_mode", pattern=r"_(default)|(relaxed)", cast=str, default=None),
     Param(
@@ -355,7 +355,7 @@ def load_metrics_to_df(
     sources = [
         [  # TODO Deal with some results having both
             "gsplat",
-            os.path.expanduser(
+            os.path.expanduser(  # TODO Add support for train metrics
                 "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step"
                 + str(i - 1).zfill(4)
                 + ".json"
@@ -1214,6 +1214,8 @@ def _process_single_render(
     folder_name: str,
     x_axis: str | None = None,
     show_depth: bool = False,
+    show_differences: bool = False,
+    show_train_renders: bool = False,
     show_gt: bool = False,
     render_num: int = 0,
     image_width: int = 1200,
@@ -1224,12 +1226,15 @@ def _process_single_render(
 ):
     from PIL import ImageOps
 
+    assert not (show_differences and show_depth)
+
     images = []
     render_files = []
 
     if render_src_dir is not None and render_src_dir.exists() and p is not None:
-        render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg"))) + sorted(
-            list(render_src_dir.glob(f"{p.stem}_*.png"))
+        stage = p.stem.replace("val_step", ("train_step" if show_train_renders else "val_step"))
+        render_files = sorted(list(render_src_dir.glob(f"{stage}_*.jpg"))) + sorted(
+            list(render_src_dir.glob(f"{stage}_*.png"))
         )
 
     if not render_files or render_num >= len(render_files):
@@ -1277,7 +1282,7 @@ def _process_single_render(
     if not isinstance(raw_metrics, dict):
         raw_metrics = {}
     depth_factors: list[float] = raw_metrics.get("depth_factor", [])
-    depth_factor = depth_factors[render_num] if depth_factors else None
+    depth_factor = depth_factors[render_num] if depth_factors and render_num < len(depth_factors) else None
     # if depth_factor is not None:
     #     alignment_scale = row.get("alignment_scale", 1.0)
     #     depth_factor *= alignment_scale
@@ -1342,13 +1347,13 @@ def _process_single_render(
             img = Image.open(r_file).convert("RGB")
             w, h = img.size
             raw_depth = np.zeros((h, w), dtype=np.float32)
-            if d_factor is not None:
+            if depth_factors:
                 if w % 7 == 0 and w % 5 != 0:
                     gt_img, pred_img, _, _, depth, _, _ = divide_img(img, splits=7)
                 else:
                     gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
                 depth = np.array(depth).mean(axis=-1) / 255.0
-                depth *= d_factor
+                depth *= d_factor or 1.0
                 if max_dist is not None:
                     depth /= max_dist
                 valid_depths = depth[depth > 0]
@@ -1370,9 +1375,15 @@ def _process_single_render(
             else:
                 gt_img, pred_img, _, _ = divide_img(img, splits=4)
                 depth = None
-            return gt_img, pred_img, depth, raw_depth
 
-        gt_img, pred_img, depth, raw_depth = load_and_split(render, depth_factor, max_cam_dist)
+            # Calculate the mean l1 difference and apply the viridis colour map to it
+            # difference_map = (np.array(pred_img) - np.array(gt_img)) / 255.0
+            # difference_map = np.abs(difference_map).mean(axis=-1)
+            # difference_map = Image.fromarray(np_rgb(difference_map, "viridis", vmax=1.0))
+            difference_map = Image.blend(pred_img, gt_img, 0.3)
+            return gt_img, pred_img, depth, raw_depth, difference_map
+
+        gt_img, pred_img, depth, raw_depth, difference_map = load_and_split(render, depth_factor, max_cam_dist)
         # DEBUGGING
         # w, h = pred_img.size
         # gt_cropped = gt_img.crop((w // 2, 0, w, h))
@@ -1389,6 +1400,7 @@ def _process_single_render(
             pred_img = gt_img
             # TODO Add GT depth
             show_depth = False
+            show_differences = False
 
         # Store original prediction to extract clean crops before depth mutation
         original_pred = pred_img.copy()
@@ -1404,6 +1416,9 @@ def _process_single_render(
             w, h = pred_img.size
             depth_right = depth.crop((w // 2, 0, w, h))
             pred_img.paste(depth_right, (w // 2, 0))
+
+        if difference_map is not None and show_differences:
+            pred_img = difference_map
 
         # Crop half the image on the right and paste it
         # w, h = pred_img.size
@@ -1506,7 +1521,7 @@ def _process_single_render(
                 for i, (idx, lbl) in enumerate(zip(idxs_to_show, labels)):
                     if idx < len(render_files):
                         dfactor = depth_factors[idx] if depth_factors else None
-                        alt_gt, alt_pred, alt_depth, _ = load_and_split(render_files[idx], dfactor, max_cam_dist)
+                        alt_gt, alt_pred, alt_depth, _, _ = load_and_split(render_files[idx], dfactor, max_cam_dist)
                         if show_gt:
                             alt_pred = alt_gt
                         if alt_depth is not None and show_depth:
@@ -1561,6 +1576,8 @@ def create_render_figure(
     x_axis: str | None = None,
     max_cols: int = 3,
     show_depth: bool = False,
+    show_differences: bool = False,
+    show_train_renders: bool = False,
     show_gt: bool = False,
     render_nums: list[int] = [0],
     stack_dataset_renders_horizontally: bool = True,
@@ -1610,6 +1627,8 @@ def create_render_figure(
                         folder_name=folder_name,
                         x_axis=x_axis,
                         show_depth=show_depth,
+                        show_differences=show_differences,
+                        show_train_renders=show_train_renders,
                         show_gt=True,
                         render_num=render_num,
                         image_width=image_width,
@@ -1627,6 +1646,8 @@ def create_render_figure(
                     folder_name=folder_name,
                     x_axis=x_axis,
                     show_depth=show_depth,
+                    show_differences=show_differences,
+                    show_train_renders=show_train_renders,
                     show_gt=False,
                     render_num=render_num,
                     image_width=image_width,
@@ -1858,6 +1879,8 @@ def plot_graph(
     split_dataset: Literal["none", "individual", "collection"] | bool = "none",
     max_render_cols: int = 3,
     show_depth: bool = False,
+    show_differences: bool = False,
+    show_train_renders: bool = False,
     show_gt: bool = False,
     render_nums: list[int] = [0],
     plot_raw: bool = True,
@@ -2354,6 +2377,8 @@ def plot_graph(
                 x_axis=x_axis,
                 max_cols=max_render_cols,
                 show_depth=show_depth,
+                show_differences=show_differences,
+                show_train_renders=show_train_renders,
                 show_gt=show_gt,
                 render_nums=render_nums,
                 stack_dataset_renders_horizontally=stack_datasets_horizontally,
