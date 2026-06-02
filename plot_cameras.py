@@ -405,13 +405,26 @@ def plot_extrinsics(
                         markeredgecolor="k",
                     )
                 )
+            else:
+                legend_elements.append(
+                    lines.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        label=series.label + "\nNot Found",
+                        markerfacecolor="black",
+                        markersize=10,
+                        markeredgecolor="k",
+                    )
+                )
 
             if legend_elements:
                 ax.legend(
                     handles=legend_elements,
                     loc="upper center",
                     bbox_to_anchor=(0.5, -0.25),
-                    ncol=len(legend_elements),
+                    ncol=1,
                     frameon=True,
                     fancybox=True,
                     shadow=False,
