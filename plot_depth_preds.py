@@ -120,7 +120,7 @@ def _process_single_depth_conf(
     combined_img.paste(depth_overlay, (w, 0))
     combined_img.paste(conf_overlay, (w * 2, 0))
 
-    pred_img = resize_with_padding(combined_img, image_width, image_height)
+    pred_img = resize_with_padding(combined_img, image_width * 3, image_height)
 
     config_name = (
         str(row.get("plot_series", input_folder.name))
@@ -173,7 +173,7 @@ def create_depth_conf_figure(
         cols_per_dataset = 1
         max_cols = len(unique_datasets)
 
-    image_width = 1200
+    image_width = 600
     image_height = 400 if any({"bicycle", "bonsai"} & set(unique_datasets)) else 600
 
     for dataset in unique_datasets:
@@ -209,9 +209,9 @@ def create_depth_conf_figure(
         stacked_img = stack_images_with_wrap(dataset_columns, max_cols=1)
 
     out_file = dest_base / "stacked_depth_conf.jpg"
-    jpg_scaling_factor = 1
+    jpg_scaling_factor = 2
     stacked_img.resize((stacked_img.width // jpg_scaling_factor, stacked_img.height // jpg_scaling_factor)).save(
-        out_file, quality=95, optimize=True
+        out_file, quality=75, optimize=True
     )
     print(f"Saved stacked depth/conf to {out_file}")
 
