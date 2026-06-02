@@ -373,6 +373,14 @@ def load_metrics_to_df(
             sfm_folders,
             series_label_overrides,
         ],
+    ] + [
+        [
+            "failed_sfm",
+            os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/failed_eval.json"),
+            lambda x, y: {},
+            sfm_folders,
+            series_label_overrides,
+        ],
     ]
     i = 0
 
@@ -1201,8 +1209,8 @@ def plot_metric_combinations(
 
 def _process_single_render(
     row: dict,
-    render_src_dir: Path,
-    p: Path,
+    render_src_dir: Path | None,
+    p: Path | None,
     folder_name: str,
     x_axis: str | None = None,
     show_depth: bool = False,
@@ -1217,12 +1225,51 @@ def _process_single_render(
     from PIL import ImageOps
 
     images = []
-    # Grab only the first image for this validation step
-    render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg"))) + sorted(
-        list(render_src_dir.glob(f"{p.stem}_*.png"))
-    )
+    render_files = []
+
+    if render_src_dir is not None and render_src_dir.exists() and p is not None:
+        render_files = sorted(list(render_src_dir.glob(f"{p.stem}_*.jpg"))) + sorted(
+            list(render_src_dir.glob(f"{p.stem}_*.png"))
+        )
 
     if not render_files or render_num >= len(render_files):
+        c_w = image_width // 3
+        c_h = image_height // 3
+        total_w = image_width
+
+        if show_zoom:
+            total_w += c_w * 2 if show_depth else c_w
+        if show_alt_frames:
+            total_w += c_w
+
+        # Create blank image with a light gray background
+        blank_img = Image.new("RGB", (total_w, image_height), (240, 240, 240))
+        draw = ImageDraw.Draw(blank_img)
+        draw.line((0, 0, total_w, image_height), fill=(200, 200, 200), width=5)
+        draw.line((0, image_height, total_w, 0), fill=(200, 200, 200), width=5)
+
+        if pd.notna(row.get("series_label_override")):
+            config_name = str(row.get("series_label_override"))
+        else:
+            config_name = (
+                str(row.get("plot_series", folder_name))
+                .replace("colmap", "COLMAP")
+                .replace("vggt", "VGGT")
+                .replace("gt", "GT")
+                .replace("combined", "Combined")
+            )
+            if x_axis and pd.notna(row.get(x_axis)):
+                config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+
+        label_text = f"{dataset_name}: {config_name}\nReconstruction Failed"
+        if show_gt:
+            label_text = f"{dataset_name}: Ground Truth\nUnavailable"
+
+        final_img = add_text_to_image(blank_img, label_text, 32)
+        final_img = ImageOps.expand(final_img, border=4, fill="black")
+        final_img = ImageOps.expand(final_img, border=20, fill="white")
+
+        images.append(final_img)
         return images
 
     render = render_files[render_num]
@@ -1540,48 +1587,55 @@ def create_render_figure(
         images_to_stack = []
         for i, (idx, row) in enumerate(dataset_df.iterrows()):
             file_path = row.get("file_path", "")
-            if not file_path or pd.isna(file_path):
-                continue
-            p = Path(file_path)
-            if "stats" in p.parts and "val_step" in p.name:
-                render_src_dir = p.parents[1] / "renders"
-                if render_src_dir.exists():
+
+            render_src_dir = None
+            p = None
+            folder_name = str(row.get("folder", "Failed"))
+
+            if file_path and not pd.isna(file_path):
+                p = Path(file_path)
+                if "stats" in p.parts and "val_step" in p.name:
+                    render_src_dir = p.parents[1] / "renders"
                     folder_name = p.parents[1].name
-                    if i == 0 and show_gt:
-                        for render_num in render_nums:
-                            processed_images = _process_single_render(
-                                row=row,
-                                render_src_dir=render_src_dir,
-                                p=p,
-                                folder_name=folder_name,
-                                x_axis=x_axis,
-                                show_depth=show_depth,
-                                show_gt=True,
-                                render_num=render_num,
-                                image_width=image_width,
-                                image_height=image_height,
-                                show_zoom=show_zoom,
-                                show_alt_frames=show_alt_frames and len(render_nums) == 1,
-                                dataset_name=dataset,
-                            )
-                            images_to_stack.extend(processed_images)
-                    for render_num in render_nums:
-                        processed_images = _process_single_render(
-                            row=row,
-                            render_src_dir=render_src_dir,
-                            p=p,
-                            folder_name=folder_name,
-                            x_axis=x_axis,
-                            show_depth=show_depth,
-                            show_gt=False,
-                            render_num=render_num,
-                            image_width=image_width,
-                            image_height=image_height,
-                            show_zoom=show_zoom,
-                            show_alt_frames=show_alt_frames and len(render_nums) == 1,
-                            dataset_name=dataset,
-                        )
-                        images_to_stack.extend(processed_images)
+                else:
+                    render_src_dir = p.parent / "renders"
+                    folder_name = p.parent.name
+
+            if i == 0 and show_gt:
+                for render_num in render_nums:
+                    processed_images = _process_single_render(
+                        row=row,
+                        render_src_dir=render_src_dir,
+                        p=p,
+                        folder_name=folder_name,
+                        x_axis=x_axis,
+                        show_depth=show_depth,
+                        show_gt=True,
+                        render_num=render_num,
+                        image_width=image_width,
+                        image_height=image_height,
+                        show_zoom=show_zoom,
+                        show_alt_frames=show_alt_frames and len(render_nums) == 1,
+                        dataset_name=dataset,
+                    )
+                    images_to_stack.extend(processed_images)
+            for render_num in render_nums:
+                processed_images = _process_single_render(
+                    row=row,
+                    render_src_dir=render_src_dir,
+                    p=p,
+                    folder_name=folder_name,
+                    x_axis=x_axis,
+                    show_depth=show_depth,
+                    show_gt=False,
+                    render_num=render_num,
+                    image_width=image_width,
+                    image_height=image_height,
+                    show_zoom=show_zoom,
+                    show_alt_frames=show_alt_frames and len(render_nums) == 1,
+                    dataset_name=dataset,
+                )
+                images_to_stack.extend(processed_images)
 
         if images_to_stack:
             dataset_columns.append(stack_images_with_wrap(images_to_stack, max_cols=cols_per_dataset))
@@ -1656,6 +1710,8 @@ def plot_cameras(
     groups_data = []
 
     for group_keys, group_df in grouped:
+        # Sort group_df by method column
+        group_df = group_df.sort_values(by="num_images").sort_values(by="method")
         if isinstance(group_keys, str) or not isinstance(group_keys, tuple):
             group_keys = (group_keys,)
 
@@ -1687,54 +1743,56 @@ def plot_cameras(
 
         for i, (idx, row) in enumerate(group_df.iterrows()):
             file_path = row.get("sfm_file_path", "")
-            if not file_path or pd.isna(file_path):
-                continue
+            has_file = bool(file_path and pd.notna(file_path))
 
-            p = Path(file_path)
-            if p.name == "eval_results.json":
-                pose_file = p.parent / "aligned_cameras.json"
+            pose_file = None
+            if has_file:
+                p = Path(file_path)
+                if p.name == "eval_results.json":
+                    pose_file = p.parent / "aligned_cameras.json"
 
-                if not pose_file.exists():
-                    continue
-
+            poses_data = {}
+            if pose_file is not None and pose_file.exists():
                 # Ensure we only plot each configuration alignment once
                 if pose_file in seen_pose_files:
                     continue
                 seen_pose_files.add(pose_file)
+                poses_data = load_poses_from_json(pose_file)
 
-                if pd.notna(row.get("series_label_override")):
-                    config_name = str(row.get("series_label_override"))
-                else:
-                    config_name = (
-                        str(row.get("plot_series", p.parent.name))
-                        .replace("colmap", "COLMAP")
-                        .replace("vggt", "VGGT")
-                        .replace("gt", "GT")
-                        .replace("combined", "Combined")
-                    )
-                    if x_axis and pd.notna(row.get(x_axis)):
-                        config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
-
-                # Prepend the dataset identifier
-                dataset_name = row.get("dataset", "")
-                if dataset_name:
-                    config_name = f"{dataset_name}: {config_name}"
-
-                seed = row.get("seed", "")
-                image_mode = row.get("image_mode", "")
-                num_images = row.get("num_images", "")
-
-                color = cmap(len(series_list) + 1) if varying_colors else (1.0, 0.0, 0.0, 1.0)
-                color = (*color[:3], 1.0)
-                series = CameraSeries(
-                    label=config_name,
-                    colour=color,
-                    poses=load_poses_from_json(pose_file),
-                    gt_poses=best_gt_poses,
-                    image_names=list(best_gt_poses.keys()),  # Temporary: need to update to num_images image_names
-                    image_name_key=f"{dataset_name}_{seed}_{image_mode}_{num_images}"
+            if pd.notna(row.get("series_label_override")):
+                config_name = str(row.get("series_label_override"))
+            else:
+                fallback_name = p.parent.name if has_file else "Failed"
+                config_name = (
+                    str(row.get("plot_series", fallback_name))
+                    .replace("colmap", "COLMAP")
+                    .replace("vggt", "VGGT")
+                    .replace("gt", "GT")
+                    .replace("combined", "Combined")
                 )
-                series_list.append(series)
+                if x_axis and pd.notna(row.get(x_axis)):
+                    config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
+
+            # Prepend the dataset identifier
+            dataset_name = row.get("dataset", "")
+            if dataset_name:
+                config_name = f"{dataset_name}: {config_name}"
+
+            seed = row.get("seed", "")
+            image_mode = row.get("image_mode", "")
+            num_images = row.get("num_images", "")
+
+            color = cmap(len(series_list) + 1) if varying_colors else (1.0, 0.0, 0.0, 1.0)
+            color = (*color[:3], 1.0)
+            series = CameraSeries(
+                label=config_name,
+                colour=color,
+                poses=poses_data,
+                gt_poses=best_gt_poses,
+                image_names=list(best_gt_poses.keys()),  # Temporary: need to update to num_images image_names
+                image_name_key=f"{dataset_name}_{seed}_{image_mode}_{num_images}",
+            )
+            series_list.append(series)
 
         if series_list:
             image_name_mapping = defaultdict(list)
@@ -1743,9 +1801,13 @@ def plot_cameras(
                     image_name_mapping[series.image_name_key] = list(series.poses.keys())
 
             for series in series_list:
-                series.image_names = image_name_mapping[series.image_name_key]
+                # If no predictions were successfully loaded across this group, ensure GT cameras are still drawn
+                if not image_name_mapping[series.image_name_key]:
+                    series.image_names = list(best_gt_poses.keys())
+                else:
+                    series.image_names = image_name_mapping[series.image_name_key]
 
-            groups_data.append((group_suffix, series_list))
+        groups_data.append((group_suffix, series_list))
 
     if not groups_data:
         return
@@ -1753,7 +1815,7 @@ def plot_cameras(
     global_max_rte = 1.0
     if not split_dataset_normalization and use_error_colors:
         global_max_rte = 0.0
-        for _, series_list, image_names in groups_data:
+        for _, series_list in groups_data:
             R_align = _get_global_alignment(series_list)
             if R_align is not None:
                 _, local_max = _calculate_all_errors(series_list, R_align)
