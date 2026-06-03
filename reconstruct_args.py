@@ -2,7 +2,9 @@ from dataclasses import dataclass
 from typing import Literal
 import os
 
-IMAGE_MODE = Literal["shuffle", "distributed", "mfps", "farthestpose", "nearestpose"]
+IMAGE_MODE = Literal[
+    "shuffle", "distributed", "mfps", "farthestpose", "minfarthestpose", "nearestpose", "minnearestpose"
+]
 COLMAP = os.path.expanduser("~/.conda/envs/vggt/bin/colmap")
 CAMERA_TYPE = Literal["SIMPLE_RADIAL", "SIMPLE_PINHOLE"]
 COPY_MODE = Literal[None, "crop", "square", "tiles"]
@@ -49,6 +51,7 @@ class ReconstructArgs:
     optimisation_iterations: int = 0
     optimisation_neighbourhood: int = 10
     feature_extractor: FEATURE_EXTRACTOR = "aliked+sp"
+    run_mvs: bool = False
 
     def __post_init__(self):
         self.name = self.name.strip("/")
@@ -68,6 +71,8 @@ class ReconstructArgs:
         if self.choice == "colmap":
             if self.shared_camera:
                 cache_parts.append("sharedcam")
+            if self.run_mvs:
+                cache_parts.append("mvs")
 
         if self.copy_mode is not None:
             cache_parts.append(self.copy_mode)
@@ -119,6 +124,8 @@ class ReconstructArgs:
             parts.append(self.colmap_mode)
             if self.camera_type != "SIMPLE_RADIAL":
                 parts.append(self.camera_type.lower().replace("simple_", "m"))
+            if self.run_mvs:
+                parts.append("mvs")
 
         parts.append(self.image_mode)
 
@@ -128,9 +135,9 @@ class ReconstructArgs:
         if self.choice == "vggt" and (self.sampling_mode == "ba" or self.use_ba):
             parts.append(f"maxba{self.max_ba_iterations}")
 
-        if self.choice == "colmap" or self.sampling_mode == "ba" or self.use_ba:
-            if self.shared_camera:
-                parts.append("sharedcam")
+        # if self.choice == "colmap" or self.sampling_mode == "ba" or self.use_ba:
+        if self.shared_camera:
+            parts.append("sharedcam")
 
         if self.copy_mode is not None:
             parts.append(self.copy_mode)

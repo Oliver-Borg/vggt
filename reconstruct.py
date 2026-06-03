@@ -32,7 +32,7 @@ from reconstruct_args import (
     ReconstructArgs,
 )
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 
 class GPUMonitor(threading.Thread):
@@ -88,6 +88,7 @@ def run_colmap_pipeline(
     shared_camera: bool = False,
     mask_path: str | None = None,
     random_seed: int = 42,
+    run_mvs: bool = False,
 ) -> COLMAPProfiling:
     """Executes the standard COLMAP SfM stages."""
     if torch.cuda.is_available():
@@ -168,7 +169,55 @@ def run_colmap_pipeline(
             ]
         )
 
-    passed = run_command(feature_extractor_args) and run_command(matcher_args) and run_command(mapper_args)
+    # Define MVS workspace directories
+    dense_path = str(Path(base_out) / "dense")
+
+    if run_mvs:
+        os.makedirs(dense_path, exist_ok=True)
+        print("Running MVS")
+    else:
+        print("Not running MVS")
+
+    undistorter_args = [
+        COLMAP,
+        "image_undistorter",
+        "--image_path",
+        images_path,
+        "--input_path",
+        str(Path(sparse_path) / "0"),  # Assumes first sub-model from mapper
+        "--output_path",
+        dense_path,
+        "--output_type",
+        "COLMAP",
+    ]
+
+    patch_match_args = [
+        COLMAP,
+        "patch_match_stereo",
+        "--workspace_path",
+        dense_path,
+    ]
+
+    stereo_fusion_args = [
+        COLMAP,
+        "stereo_fusion",
+        "--workspace_path",
+        dense_path,
+        "--output_path",
+        str(Path(dense_path) / "fused.ply"),
+    ]
+
+    passed = (
+        run_command(feature_extractor_args)
+        and run_command(matcher_args)
+        and run_command(mapper_args)
+    )
+    if run_mvs:
+        passed = passed and (
+            run_command(undistorter_args)
+            and run_command(patch_match_args)
+            and run_command(stereo_fusion_args)
+        )
     total_time = time.time() - t1
 
     monitor.stop()
@@ -262,7 +311,7 @@ def _select_indices(
     num_images: int,
     seed: int,
     farthest: bool = True,
-    agg_fn: Callable[..., np.ndarray] = np.mean,
+    agg_fn: Callable[..., np.ndarray] = np.mean,  # TODO This really should be np.min
 ):
     # Farthest Point Sampling
     # TODO Try out normal Farthest Point Sampling
@@ -342,20 +391,24 @@ def get_image_list(
         for i in selected_indices:
             image_subset.append(all_images[i])
         all_images = image_subset
-    elif image_mode == "farthestpose" or image_mode == "nearestpose":
+    elif "farthestpose" in image_mode or "nearestpose" in image_mode:
         assert pcd is not None
         poses = get_poses(pcd)
         coords = np.array([poses[name][:3, 3] for name in all_images])
-        farthest = image_mode == "farthestpose"
-        assert set(_select_indices(coords, num_images // 2, seed, farthest)).issubset(
-            _select_indices(coords, num_images, seed, farthest)
+        farthest = "farthestpose" in image_mode
+        agg_fn = np.min if "min" in image_mode else np.mean
+        assert set(_select_indices(coords, num_images // 2, seed, farthest, agg_fn)).issubset(
+            _select_indices(coords, num_images, seed, farthest, agg_fn)
         )
-        selected_indices = indices[_select_indices(coords, num_images, seed, farthest)]
+        selected_indices = indices[_select_indices(coords, num_images, seed, farthest, agg_fn)]
         image_subset = []
         for i in selected_indices:
             image_subset.append(all_images[i])
         all_images = image_subset
+    else:
+        raise ValueError(f"Unknown image mode: {image_mode}")
 
+    assert len(all_images) == num_images
     return all_images
 
 
@@ -491,7 +544,7 @@ def run_reconstruction(
 
     is_nerf_synthetic = "nerf_synthetic" in Path(input_path).parts
 
-    if args.image_mode == "farthestpose" or args.image_mode == "nearestpose":
+    if "pose" in args.image_mode:
         if is_nerf_synthetic:
             pcd = load_cameras(Path(input_path).parent / f"transforms_{Path(input_path).name}.json")
         else:
@@ -589,6 +642,7 @@ def run_reconstruction(
             mask_path=masks_path if is_nerf_synthetic else None,
             camera_type=args.camera_type,
             random_seed=args.seed,
+            run_mvs=args.run_mvs,
         )
     elif args.choice == "vggt":
         profiling = run_vggt_pipeline(

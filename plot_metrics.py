@@ -149,6 +149,12 @@ regexes = [
         default="",
     ),
     Param(
+        name="run_mvs",
+        pattern=r"_(mvs)",
+        cast=lambda x: str(bool(x)),
+        default="False",
+    ),
+    Param(
         name="pose_opt_module",
         pattern=r"_pomod(mcmc)|_pomod(3rgs)|_pomod(sgld)",
         cast=str,
@@ -2424,7 +2430,7 @@ def plot_graph(
             pcd_df = pcd_df.assign(
                 input_folder=pd.Categorical(pcd_df["input_folder"], categories=list(set(camera_folders)), ordered=True)
             ).sort_values("input_folder")
-            plot_point_clouds(pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols * 2)
+            plot_point_clouds(pcd_df, Path(suffix + "_pcd"), x_axis=x_axis, max_cols=max_render_cols)
 
     if dataset_name and experiment_name:
         latest_suffix = f"latest_plots/{experiment_name}_{dataset_name}_latest"
@@ -2619,6 +2625,12 @@ def plot_table(
     columns_to_include = list(dict.fromkeys(columns_to_include))
     # Keep only existing columns
     columns_to_include = [col for col in columns_to_include if col in df.columns]
+
+    # Remove columns from columns_to_include if all values in the column are null or ""
+    columns_to_include = [
+        col for col in columns_to_include
+        if not (df[col].isna() | (df[col] == "")).all()
+    ]
 
     non_metric_cols = [col for col in columns_to_include if col not in metric_keys or col in split_cols]
     if "series_label_override" in columns_to_include and "series_label_override" not in non_metric_cols:
