@@ -13,7 +13,7 @@ plt.style.use(["science", "grid"])
 
 textwidth = 7.00697
 aspect_ratio = 1.0
-scale = 4.0
+scale = 2.0
 # Total figure width
 width = textwidth * scale
 
@@ -75,18 +75,22 @@ def load_pcd_from_sparse(sparse_dir: Path):
     if (sparse_dir / "0").exists():
         sparse_dir = sparse_dir / "0"
     if not sparse_dir.exists():
-        return None, None, None
+        return None, None, None, None, None, None, None
 
     if hasattr(pycolmap, "Reconstruction"):
         try:
             recon = pycolmap.Reconstruction(str(sparse_dir))
             points = recon.points3D
             if points is None or len(points) == 0:
-                return None, None, None
+                return None, None, None, None, None, None, None
             xyz = np.array([p.xyz for p in points.values()])
             rgb = np.array([p.color for p in points.values()])
 
             c2ws = []
+            image_names = []
+            Ks = []
+            Ws = []
+            Hs = []
             images = sorted(recon.images.values(), key=lambda img: img.name)
             for img in images:
                 if hasattr(img, "cam_from_world"):
@@ -99,9 +103,16 @@ def load_pcd_from_sparse(sparse_dir: Path):
                     c2w[:3, :3] = R.T
                     c2w[:3, 3] = -R.T @ t
                 c2ws.append(c2w)
+                image_names.append(img.name)
+
+                # Extract actual camera intrinsics
+                cam = recon.cameras[img.camera_id]
+                Ks.append(cam.K)
+                Ws.append(cam.width)
+                Hs.append(cam.height)
 
             print(f"Loaded {len(xyz)} points from {sparse_dir}")
-            return xyz, rgb, np.array(c2ws)
+            return xyz, rgb, np.array(c2ws), image_names, np.array(Ks), np.array(Ws), np.array(Hs)
         except Exception as e:
             print(f"Failed to load reconstruction from {sparse_dir}: {e}")
 
@@ -114,7 +125,7 @@ def load_pcd_from_sparse(sparse_dir: Path):
 
             points = manager.points3D
             if points is None or len(points) == 0:
-                return None, None, None
+                return None, None, None, None, None, None, None
 
             xyz = manager.points3D.astype(np.float32)
             rgb = manager.point3D_colors.astype(np.uint8)
@@ -122,6 +133,9 @@ def load_pcd_from_sparse(sparse_dir: Path):
             imdata = manager.images
             c2ws = []
             image_names = []
+            Ks = []
+            Ws = []
+            Hs = []
             bottom = np.array([0, 0, 0, 1]).reshape(1, 4)
 
             for k in imdata:
@@ -134,18 +148,28 @@ def load_pcd_from_sparse(sparse_dir: Path):
                 c2ws.append(c2w)
                 image_names.append(im.name)
 
+                # Extract actual camera intrinsics
+                cam = manager.cameras[im.camera_id]
+                Ks.append(cam.K)
+                Ws.append(cam.width)
+                Hs.append(cam.height)
+
             c2ws = np.stack(c2ws, axis=0)
 
             # Sort poses based on image names (matching the Parser implementation)
             inds = np.argsort(image_names)
             c2ws = c2ws[inds]
+            image_names = [image_names[i] for i in inds]
+            Ks = np.array([Ks[i] for i in inds])
+            Ws = np.array([Ws[i] for i in inds])
+            Hs = np.array([Hs[i] for i in inds])
 
             print(f"Loaded {len(xyz)} points from {sparse_dir}")
-            return xyz, rgb, c2ws
+            return xyz, rgb, c2ws, image_names, Ks, Ws, Hs
         except Exception as e:
             print(f"Failed to load reconstruction from {sparse_dir}: {e}")
 
-    return None, None, None
+    return None, None, None, None, None, None, None
 
 
 def create_frustum_lines(K: np.ndarray, c2w: np.ndarray, W: int, H: int, scale: float = 1.0):
@@ -232,11 +256,31 @@ def plot_point_clouds(
     view_mode: str = "isometric",
     draw_frustum: bool = False,
     stack_dataset_renders_horizontally: bool = True,
+    show_gt: bool = True,
+    show_differences: bool = False,
 ):
     """Projects point clouds to 2D images using Open3D rendering and Matplotlib."""
+    import cv2  # Imported locally for resizing operations
+    import matplotlib.cm as cm  # Imported locally for colormap
+
     dest_base = Path(dest_base)
     dest_base.mkdir(parents=True, exist_ok=True)
     df = df.copy()
+
+    # Sort the dataframe by method and the custom sampling_mode order
+    if "method" in df.columns and "sampling_mode" in df.columns:
+        sampling_order = ["ba", "confidence", "random", "voxels", "imagefps"]
+
+        # Append any unknown sampling modes to the end to prevent data loss or NaNs
+        existing_modes = df["sampling_mode"].dropna().unique().tolist()
+        for mode in existing_modes:
+            if mode not in sampling_order:
+                sampling_order.append(mode)
+
+        df["sampling_mode"] = pd.Categorical(df["sampling_mode"], categories=sampling_order, ordered=True)
+        df = df.sort_values(by=["method", "sampling_mode"])
+    elif "method" in df.columns:
+        df = df.sort_values(by=["method"])
 
     point_clouds = []
 
@@ -258,11 +302,13 @@ def plot_point_clouds(
                 config_name = f"{config_name} | {x_axis}={row.get(x_axis)}"
 
             sparse_dir = p.parent / "sparse"
-            xyz, rgb, c2ws = load_pcd_from_sparse(sparse_dir)
+            xyz, rgb, c2ws, image_names, Ks, Ws, Hs = load_pcd_from_sparse(sparse_dir)
 
             dataset = row.get("dataset", "Unknown")
 
             if xyz is not None and c2ws is not None and len(c2ws) > 0:
+                first_image_path = p.parent / "images" / image_names[0]
+
                 # 1. Align upward
                 R_align_up = get_alignment_rotation(c2ws)
                 c1_center_aligned = R_align_up @ c2ws[0][:3, 3]
@@ -330,6 +376,10 @@ def plot_point_clouds(
                         "rgb_filt": rgb_filtered,
                         "local_bounds": local_bounds,
                         "c1_aligned": c1_aligned,
+                        "first_image_path": first_image_path,
+                        "K1": Ks[0],
+                        "W1": int(Ws[0]),
+                        "H1": int(Hs[0]),
                     }
                 )
 
@@ -339,7 +389,7 @@ def plot_point_clouds(
 
     # Determine layout groupings (views placed horizontally per configuration)
     unique_datasets = list(dict.fromkeys([c["dataset"] for c in point_clouds]))
-    views_per_config = 2 + (1 if remove_ceiling else 0)
+    views_per_config = 2 + (1 if show_gt else 0) + (1 if show_differences else 0) + (1 if remove_ceiling else 0)
 
     if stack_dataset_renders_horizontally and len(unique_datasets) > 1:
         cols = len(unique_datasets) * views_per_config
@@ -356,7 +406,19 @@ def plot_point_clouds(
 
             c_base = dataset_idx * views_per_config
             r_main = row_idx
-            grid_positions.append((r_main, c_base, c_base + 1, c_base + 2 if remove_ceiling else None))
+
+            col_offset = 2
+            c_gt_idx = c_base + col_offset if show_gt else None
+            if show_gt:
+                col_offset += 1
+
+            c_diff_idx = c_base + col_offset if show_differences else None
+            if show_differences:
+                col_offset += 1
+
+            c_filt_idx = c_base + col_offset if remove_ceiling else None
+
+            grid_positions.append((r_main, c_base, c_base + 1, c_gt_idx, c_diff_idx, c_filt_idx))
     else:
         configs_per_row = max(1, max_cols // views_per_config)
         cols = configs_per_row * views_per_config
@@ -369,7 +431,19 @@ def plot_point_clouds(
 
             c_base = col_idx * views_per_config
             r_main = row_idx
-            grid_positions.append((r_main, c_base, c_base + 1, c_base + 2 if remove_ceiling else None))
+
+            col_offset = 2
+            c_gt_idx = c_base + col_offset if show_gt else None
+            if show_gt:
+                col_offset += 1
+
+            c_diff_idx = c_base + col_offset if show_differences else None
+            if show_differences:
+                col_offset += 1
+
+            c_filt_idx = c_base + col_offset if remove_ceiling else None
+
+            grid_positions.append((r_main, c_base, c_base + 1, c_gt_idx, c_diff_idx, c_filt_idx))
 
     # Calculate proportional figure height to maintain roughly square subplots
     fig_height = (width / max(1, cols)) * total_rows * aspect_ratio
@@ -386,7 +460,7 @@ def plot_point_clouds(
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-    # Virtual Camera Intrinsic Properties
+    # Virtual Camera Intrinsic Properties (used only for isometric/wide views)
     W, H = 1200, 1200
     K = np.array([[W, 0.0, W / 2], [0.0, H, H / 2], [0.0, 0.0, 1.0]])
 
@@ -403,7 +477,7 @@ def plot_point_clouds(
     bbox_props = dict(boxstyle="round,pad=0.2", fc="white", ec="black", lw=0.5, alpha=0.8)
 
     for idx, (config, pos) in enumerate(zip(point_clouds, grid_positions)):
-        r, c_main, c_zoom, c_filt = pos
+        r, c_main, c_zoom, c_gt, c_diff, c_filt = pos
 
         xyz = config["xyz_aligned"]
         rgb = config["rgb"]
@@ -413,6 +487,22 @@ def plot_point_clouds(
         c1_aligned = config["c1_aligned"]
         config_name = config["config_name"]
         dataset_name = config["dataset"]
+        first_image_path = config["first_image_path"]
+
+        # Load intrinsics for the zoom camera
+        K_zoom = config["K1"].copy()
+        W_zoom = config["W1"]
+        H_zoom = config["H1"]
+
+        # Calculate padding dimensions to make the images square
+        max_dim = max(W_zoom, H_zoom)
+        pad_x = (max_dim - W_zoom) / 2.0
+        pad_y = (max_dim - H_zoom) / 2.0
+
+        # Adjust the principal point to match the new padded square dimension
+        K_square = K_zoom.copy()
+        K_square[0, 2] += pad_x
+        K_square[1, 2] += pad_y
 
         # Calculate main target and range from local bounds instead of global bounds
         x_min, x_max, y_min, y_max, z_min, z_max = local_bounds
@@ -428,43 +518,168 @@ def plot_point_clouds(
 
         frustum_lines = None
         if draw_frustum:
-            frustum_lines = create_frustum_lines(K, c2w_zoom, W, H, scale=main_max_range * 0.15)
+            # Draw the frustum matching the actual original unpadded ground-truth camera parameters
+            frustum_lines = create_frustum_lines(K_zoom, c2w_zoom, W_zoom, H_zoom, scale=main_max_range * 0.15)
 
         # Fetch configured spine width from rcParams
         spine_width = plt.rcParams.get("axes.linewidth", 0.4)
 
-        # Render Main Image
+        # Render Main Image (Synthetic View)
         img_main = _render_o3d_image(xyz, rgb, c2w_main, K, W, H, frustum_line_set=frustum_lines)
         ax_main = axes[r, c_main]
         ax_main.imshow(img_main)
         ax_main.set_xlabel(config_name, fontsize=12, labelpad=2)
-        ax_main.text(0.95, 0.95, f"{dataset_name} - Full", transform=ax_main.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props)
+        ax_main.text(
+            0.95,
+            0.95,
+            f"{dataset_name} - Full",
+            transform=ax_main.transAxes,
+            ha="right",
+            va="top",
+            fontsize=12,
+            bbox=bbox_props,
+        )
         for spine in ax_main.spines.values():
             spine.set_visible(True)
             spine.set_color("black")
             spine.set_linewidth(spine_width)
 
-        # Render Zoomed Image
-        img_zoom = _render_o3d_image(xyz, rgb, c2w_zoom, K, W, H)
+        # Render Zoomed Image (Padded to square, then resized to 1200x1200)
+        img_zoom_raw = _render_o3d_image(xyz, rgb, c2w_zoom, K_square, max_dim, max_dim)
+        img_zoom = cv2.resize(img_zoom_raw, (1200, 1200), interpolation=cv2.INTER_NEAREST)
+
         ax_zoom = axes[r, c_zoom]
         ax_zoom.imshow(img_zoom)
         ax_zoom.set_xlabel(config_name, fontsize=12, labelpad=2)
         ax_zoom.text(
-            0.95, 0.95, f"{dataset_name} - Zoomed", transform=ax_zoom.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
+            0.95,
+            0.95,
+            f"{dataset_name} - Zoomed",
+            transform=ax_zoom.transAxes,
+            ha="right",
+            va="top",
+            fontsize=12,
+            bbox=bbox_props,
         )
         for spine in ax_zoom.spines.values():
             spine.set_visible(True)
             spine.set_color("black")
             spine.set_linewidth(spine_width)
 
-        # Render Filtered Image (if requested)
-        if remove_ceiling and xyz_filt is not None:
+        # Pre-process Ground Truth for rendering or difference matching
+        gt_img_resized = None
+        if (show_gt or show_differences) and first_image_path is not None and first_image_path.exists():
+            gt_img = plt.imread(first_image_path)
+
+            # Composite over black background if image has an alpha channel
+            if gt_img.ndim == 3 and gt_img.shape[2] == 4:
+                alpha = gt_img[:, :, 3:]
+                if gt_img.dtype == np.uint8:
+                    alpha_norm = alpha / 255.0
+                    gt_img = (gt_img[:, :, :3] * alpha_norm).astype(np.uint8)
+                else:
+                    gt_img = gt_img[:, :, :3] * alpha
+
+            pad_top = int(np.floor(pad_y))
+            pad_bottom = int(np.ceil(pad_y))
+            pad_left = int(np.floor(pad_x))
+            pad_right = int(np.ceil(pad_x))
+
+            if gt_img.ndim == 3:
+                gt_padded = np.pad(
+                    gt_img, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode="constant", constant_values=0
+                )
+            else:
+                gt_padded = np.pad(
+                    gt_img, ((pad_top, pad_bottom), (pad_left, pad_right)), mode="constant", constant_values=0
+                )
+
+            gt_img_resized = cv2.resize(gt_padded, (1200, 1200), interpolation=cv2.INTER_AREA)
+
+        # Render GT Image
+        if show_gt and c_gt is not None:
+            ax_gt = axes[r, c_gt]
+            if gt_img_resized is not None:
+                ax_gt.imshow(gt_img_resized)
+            else:
+                ax_gt.text(0.5, 0.5, "GT Image Missing", ha="center", va="center")
+
+            ax_gt.set_xlabel(config_name, fontsize=12, labelpad=2)
+            ax_gt.text(
+                0.95,
+                0.95,
+                f"{dataset_name} - GT View",
+                transform=ax_gt.transAxes,
+                ha="right",
+                va="top",
+                fontsize=12,
+                bbox=bbox_props,
+            )
+            for spine in ax_gt.spines.values():
+                spine.set_visible(True)
+                spine.set_color("black")
+                spine.set_linewidth(spine_width)
+
+        # Render Difference Map
+        if show_differences and c_diff is not None:
+            ax_diff = axes[r, c_diff]
+            if gt_img_resized is not None and img_zoom is not None:
+                # Normalize GT to [0, 1] scale for accurate MAE
+                gt_norm = gt_img_resized.copy()
+                if gt_norm.dtype == np.uint8:
+                    gt_norm = gt_norm.astype(np.float32) / 255.0
+                elif gt_norm.max() > 1.0:
+                    gt_norm = gt_norm.astype(np.float32) / 255.0
+
+                # Compute Mean Absolute Error per pixel across RGB channels
+                diff = np.power(img_zoom - gt_norm, 2)
+                mae = diff.mean(axis=-1)
+
+                # Apply viridis colormap
+                diff_colored = cm.gray(mae)[:, :, :3]
+
+                proj_is_black = (img_zoom < 5 / 255).all(axis=-1)
+                gt_is_black = (gt_norm < 1 / 255).any(axis=-1)
+                mask = proj_is_black | gt_is_black
+
+                # Nullify differences in the masked regions (render missing points as black)
+                diff_colored[mask] = [0.0, 0.0, 0.0]
+
+                ax_diff.imshow(diff_colored)
+            else:
+                ax_diff.text(0.5, 0.5, "Diff Unavailable", ha="center", va="center")
+
+            ax_diff.set_xlabel(config_name, fontsize=12, labelpad=2)
+            ax_diff.text(
+                0.95,
+                0.95,
+                f"{dataset_name} - Diff",
+                transform=ax_diff.transAxes,
+                ha="right",
+                va="top",
+                fontsize=12,
+                bbox=bbox_props,
+            )
+            for spine in ax_diff.spines.values():
+                spine.set_visible(True)
+                spine.set_color("black")
+                spine.set_linewidth(spine_width)
+
+        # Render Filtered Image (if requested, Synthetic View)
+        if remove_ceiling and xyz_filt is not None and c_filt is not None:
             img_filt = _render_o3d_image(xyz_filt, rgb_filt, c2w_main, K, W, H)
             ax_filt = axes[r, c_filt]
             ax_filt.imshow(img_filt)
             ax_filt.set_xlabel(config_name, fontsize=12, labelpad=2)
             ax_filt.text(
-                0.95, 0.95, f"{dataset_name} - No Ceiling", transform=ax_filt.transAxes, ha="right", va="top", fontsize=12, bbox=bbox_props
+                0.95,
+                0.95,
+                f"{dataset_name} - No Ceiling",
+                transform=ax_filt.transAxes,
+                ha="right",
+                va="top",
+                fontsize=12,
+                bbox=bbox_props,
             )
             for spine in ax_filt.spines.values():
                 spine.set_visible(True)
