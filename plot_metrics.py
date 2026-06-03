@@ -517,6 +517,7 @@ def load_metrics_to_df(
 
 def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, float]]:
     """Extracts RRE and RTE from SfM json."""
+    metrics = {}
     if "metrics" in data and "mean_rre_deg" in data["metrics"]:
         metrics = {
             "rre": data["metrics"]["mean_rre_deg"],
@@ -538,9 +539,36 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
             metrics["raw_eval_metrics"]["pred_depth_absrel"] = data["metrics"]["all_depth_absrel"]
             metrics["raw_eval_metrics"]["pred_depth_rmse"] = data["metrics"]["all_depth_rmse"]
 
-        return metrics
-    return {}
+    # Load corresponding stat.json directly for timing and memory benchmarks
+    stat_path = os.path.join(os.path.dirname(filename), "stat.json")
+    if os.path.exists(stat_path):
+        try:
+            with open(stat_path, "r") as f:
+                stat_data = json.load(f)
 
+            profiling = stat_data.get("profiling", {})
+            if profiling:
+                if "used_cache" in profiling:
+                    metrics["used_cache"] = profiling.get("used_cache")
+                    metrics["cache_load_time"] = profiling.get("cache_load_t", 0.0)
+                    inf_times = profiling.get("inference_times", [])
+                    if inf_times:
+                        metrics["inference_time"] = sum(inf_times) / len(inf_times)
+                    else:
+                        metrics["inference_time"] = profiling.get("warmup_t", 0.0)
+
+                    vram = profiling.get("inference_vram_mb", [0, 0])
+                    metrics["peak_memory_mb"] = vram[0] if isinstance(vram, list) and len(vram) > 0 else 0.0
+                    metrics["peak_memory_reserved_mb"] = vram[1] if isinstance(vram, list) and len(vram) > 1 else 0.0
+                elif "colmap_vram_mb" in profiling:
+                    metrics["inference_time"] = profiling.get("colmap_t", 0.0)
+                    vram = profiling.get("colmap_vram_mb", [0, 0])
+                    metrics["peak_memory_mb"] = vram[0] if isinstance(vram, list) and len(vram) > 0 else 0.0
+                    metrics["peak_memory_reserved_mb"] = vram[1] if isinstance(vram, list) and len(vram) > 1 else 0.0
+        except Exception as e:
+            print(f"Failed to load stat.json alongside eval_results.json: {e}")
+
+    return metrics
 
 def get_quality(psnr: float, ssim: float, lpips: float):
     scaled_psnr = (psnr - 14) / (32 - 14)
@@ -2091,6 +2119,9 @@ def plot_graph(
         {"y": "pred_depth_l1", "title": "Predicted Depth L1 ↓", "ylabel": "Loss", "direction": "↓"},
         {"y": "pred_depth_absrel", "title": "Predicted Depth Abs Rel ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "pred_depth_rmse", "title": "Predicted Depth RMSE ↓", "ylabel": "Loss", "direction": "↓"},
+        {"y": "inference_time", "title": "Inference Time ↓", "ylabel": "s", "direction": "↓"},
+        {"y": "peak_memory_mb", "title": "Peak Memory ↓", "ylabel": "MB", "direction": "↓"},
+        {"y": "peak_memory_reserved_mb", "title": "Peak Memory Reserved ↓", "ylabel": "MB", "direction": "↓"},
     ]
 
     metrics = {m["y"]: m for m in metrics_config}

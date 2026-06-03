@@ -18,7 +18,7 @@ import torch.nn.functional as F
 import tqdm
 
 from cam_opt import detect_outlier_cameras, optimize_poses_with_registration
-from cam_utils import c2w_to_w2c, umeyama_alignment_with_orientation, w2c_to_c2w
+from cam_utils import c2w_to_w2c, stochastic_umeyama_alignment, umeyama_alignment_with_orientation, w2c_to_c2w
 from combine_clouds import save_cameras_json
 from reconstruct_args import SAMPLING_MODE
 from vggt.dependency.pycolmap_to_np import extract_poses_from_reconstruction
@@ -170,6 +170,14 @@ class VGGTProfiling(TypedDict):
     point_cloud_processing_vram_mb: tuple[float, float]
     point_cloud_processing_t: float
     saving_t: float
+    used_cache: bool
+    cache_load_t: float
+    pose_opt_t: float
+    tracking_t: float
+    tracking_vram_mb: tuple[float, float]
+    used_track_cache: bool
+    ba_t: float
+    ba_vram_mb: tuple[float, float]
 
 
 def save_depths(path: str, depths: np.ndarray, raw_confs: np.ndarray, viz_confs: np.ndarray, camera_names: list[str]):
@@ -204,12 +212,22 @@ def load_model() -> VGGT:
 
 
 def predict_tracks_with_cache(
-    images, conf, points_3d, masks, max_query_pts, query_frame_num, keypoint_extractor, fine_tracking, cache_dir, device
+    images,
+    conf,
+    points_3d,
+    masks,
+    max_query_pts,
+    query_frame_num,
+    keypoint_extractor,
+    fine_tracking,
+    cache_dir,
+    device,
+    enable_timing=False,
 ):
     if cache_dir is not None:
         os.makedirs(cache_dir, exist_ok=True)
-    track_cache_file = os.path.join(cache_dir, "tracks.pt")
-    track_config_file = os.path.join(cache_dir, "tracks_config.json")
+    track_cache_file = os.path.join(cache_dir, "tracks.pt") if cache_dir else None
+    track_config_file = os.path.join(cache_dir, "tracks_config.json") if cache_dir else None
 
     track_config = {
         "max_query_pts": max_query_pts,
@@ -219,7 +237,13 @@ def predict_tracks_with_cache(
     }
 
     load_cached_tracks = False
-    if track_cache_file and os.path.exists(track_cache_file) and os.path.exists(track_config_file):
+    if (
+        not enable_timing
+        and track_cache_file
+        and os.path.exists(track_cache_file)
+        and track_config_file
+        and os.path.exists(track_config_file)
+    ):
         try:
             with open(track_config_file, "r") as f:
                 cached_config = json.load(f)
@@ -227,6 +251,9 @@ def predict_tracks_with_cache(
                 load_cached_tracks = True
         except Exception as e:
             print(f"Warning: Failed to read track cache config: {e}")
+
+    used_track_cache = False
+    track_t1 = time.time()
 
     if load_cached_tracks:
         print(f"Loading cached tracks from {track_cache_file}")
@@ -236,6 +263,7 @@ def predict_tracks_with_cache(
         pred_confs = cached_tracks["pred_confs"]
         tracked_points_3d = cached_tracks["tracked_points_3d"]
         tracked_points_rgb = cached_tracks["tracked_points_rgb"]
+        used_track_cache = True
     else:
         pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb = predict_tracks(
             images,
@@ -248,7 +276,7 @@ def predict_tracks_with_cache(
             fine_tracking=fine_tracking,
         )
 
-        if track_cache_file:
+        if track_cache_file and not enable_timing:
             print(f"Saving tracks to {track_cache_file}")
             torch.save(
                 {
@@ -263,7 +291,9 @@ def predict_tracks_with_cache(
             with open(track_config_file, "w") as f:
                 json.dump(track_config, f)
 
-    return pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb
+    track_time = time.time() - track_t1
+
+    return pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb, used_track_cache, track_time
 
 
 def filter_nearest(
@@ -388,6 +418,7 @@ def run_vggt(
     optimisation_iterations: int = 0,
     optimisation_neighbourhood: int = 10,
     feature_extractor: str = "aliked+sp",
+    enable_timing: bool = False,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -418,6 +449,7 @@ def run_vggt(
             "optimisation_iterations": optimisation_iterations,
             "optimisation_neighbourhood": optimisation_neighbourhood,
             "feature_extractor": feature_extractor,
+            "enable_timing": enable_timing,
         },
     )
 
@@ -442,8 +474,20 @@ def run_vggt(
 
     cache_file = os.path.join(cache_dir, "raw_preds.pt") if cache_dir else None
 
+    # Handle timing explicit warmup & cache ignore
+    if enable_timing:
+        num_profiling_runs = max(num_profiling_runs, 3)
+        cache_file = None
+    else:
+        num_profiling_runs = 0
+
+    used_cache = False
+    cache_load_t = 0.0
+
     if cache_file and os.path.exists(cache_file):
         print(f"Loading cached raw predictions from {cache_file}")
+        used_cache = True
+        cache_t1 = time.time()
         model_load_t1 = time.time()
         model_load_t2 = time.time()
         model_vram_mb = (0.0, 0.0)
@@ -460,7 +504,9 @@ def run_vggt(
         masks = cached_data["masks"]
         base_image_path_list = cached_data["base_image_path_list"]
         image_load_t2 = time.time()
-        print(f"Cached data loaded in {image_load_t2 - image_load_t1:.2f} seconds")
+
+        cache_load_t = time.time() - cache_t1
+        print(f"Cached data loaded in {cache_load_t:.2f} seconds")
 
         warmup_t1 = time.time()
         warmup_t2 = time.time()
@@ -545,6 +591,8 @@ def run_vggt(
     model_load_t2 = time.time()
     model_alloc, model_res = model_vram_mb = get_gpu_stats()
     print(f"Model loaded | Peak allocated GPU Mem: {model_alloc:.2f} MB | Peak reserved GPU Mem: {model_res:.2f} MB")
+
+    pose_opt_t1 = time.time()
     if optimisation_iterations > 0:
         outlier_indices = detect_outlier_cameras(
             extrinsic,
@@ -588,15 +636,21 @@ def run_vggt(
             distances_global_cameras = cdist(to_points, to_points, metric="euclidean")
 
             valid_distances = distances_global_cameras[np.triu_indices(distances_global_cameras.shape[0], k=1)]
-            alpha = float(np.mean(valid_distances)) * 0.0
+            alpha = float(np.mean(valid_distances))
 
-            s, R, t = umeyama_alignment_with_orientation(
+            # s, R, t = umeyama_alignment_with_orientation(
+            #     from_points,
+            #     to_points,
+            #     from_rotations,
+            #     to_rotations,
+            #     alpha=alpha,
+            #     ignore_outliers=True,
+            # )
+            s, R, t = stochastic_umeyama_alignment(
                 from_points,
                 to_points,
                 from_rotations,
                 to_rotations,
-                alpha=alpha,
-                ignore_outliers=True,
             )
 
             aligned_mini_extrinsic = mini_extrinsic.copy()
@@ -611,8 +665,6 @@ def run_vggt(
             # 5. Update the global extrinsics to the more accurate local extrinsics
             extrinsic[nearest_indices] = aligned_mini_extrinsic
 
-    processing_t1 = time.time()
-
     if reconstruct_pose_opt:
         opt_extrinsics, depth_maps, valid_masks = optimize_poses_with_registration(
             extrinsic,
@@ -623,6 +675,10 @@ def run_vggt(
             masks,
         )
         extrinsic = opt_extrinsics
+
+    pose_opt_t = time.time() - pose_opt_t1
+
+    processing_t1 = time.time()
 
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
     points_3d[masks[..., 0] == 0] = np.nan
@@ -635,6 +691,12 @@ def run_vggt(
     print(get_gpu_stats())
 
     points_conf_rgb = None
+
+    tracking_t = 0.0
+    tracking_vram_mb = (0.0, 0.0)
+    used_track_cache = False
+    ba_t = 0.0
+    ba_vram_mb = (0.0, 0.0)
 
     if use_ba:
         image_size = np.array(images.shape[-2:])
@@ -661,7 +723,17 @@ def run_vggt(
 
             track_cache_dir = cache_dir.rstrip("/") + "_".join(track_cache_parts) if cache_dir is not None else None
 
-            pred_tracks, pred_vis_scores, pred_confs, tracked_points_3d, tracked_points_rgb = predict_tracks_with_cache(
+            get_gpu_stats(reset=True)
+
+            (
+                pred_tracks,
+                pred_vis_scores,
+                pred_confs,
+                tracked_points_3d,
+                tracked_points_rgb,
+                used_track_cache,
+                tracking_t,
+            ) = predict_tracks_with_cache(
                 images,
                 conf=depth_conf,
                 points_3d=points_3d,
@@ -672,9 +744,15 @@ def run_vggt(
                 fine_tracking=fine_tracking,
                 cache_dir=track_cache_dir,
                 device=device,
+                enable_timing=enable_timing,
             )
 
+            tracking_vram_mb = get_gpu_stats(reset=True)
+
             torch.cuda.empty_cache()
+
+        get_gpu_stats(reset=True)
+        ba_t1 = time.time()
 
         # rescale the intrinsic matrix from 518 to 1024
         intrinsic[:, :2, :] *= scale
@@ -727,15 +805,21 @@ def run_vggt(
         if sampling_mode == "ba":
             points_3d = tracked_points_3d
 
+        ba_t = time.time() - ba_t1
+        ba_vram_mb = get_gpu_stats(reset=True)
+
     if sampling_mode != "ba":
         conf_thres_value = conf_thres_value
         max_points_for_colmap = num_points  # randomly sample 3D points
         if not use_ba:
-            shared_camera = False  # in the feedforward manner, we do not support shared camera
+            # shared_camera = False  # in the feedforward manner, we do not support shared camera
             camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
 
         image_size = np.array([vggt_fixed_resolution, vggt_fixed_resolution])
         num_frames, height, width, _ = points_3d.shape
+        if shared_camera:
+            # Use the first camera's intrinsic for all cameras if shared_camera is True
+            intrinsic = np.tile(intrinsic[0:1], (num_frames, 1, 1))
 
         points_rgb = F.interpolate(
             images, size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="bilinear", align_corners=False
@@ -876,6 +960,14 @@ def run_vggt(
         point_cloud_processing_vram_mb=processing_vram_mb,
         point_cloud_processing_t=processing_t2 - processing_t1,
         saving_t=saving_t2 - saving_t1,
+        used_cache=used_cache,
+        cache_load_t=cache_load_t,
+        pose_opt_t=pose_opt_t,
+        tracking_t=tracking_t,
+        tracking_vram_mb=tracking_vram_mb,
+        used_track_cache=used_track_cache,
+        ba_t=ba_t,
+        ba_vram_mb=ba_vram_mb,
     )
 
 

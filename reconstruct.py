@@ -250,11 +250,12 @@ def run_vggt_pipeline(
     optimisation_iterations: int = 0,
     optimisation_neighbourhood: int = 10,
     feature_extractor: str = "aliked+sp",
+    enable_timing: bool = False,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
         scene_dir=base_out,
-        num_profiling_runs=0,
+        num_profiling_runs=3,
         use_ba=sampling_mode == "ba" or use_ba,
         camera_type=camera_type,
         conf_thres_value=conf_thres_value,
@@ -270,6 +271,7 @@ def run_vggt_pipeline(
         optimisation_iterations=optimisation_iterations,
         optimisation_neighbourhood=optimisation_neighbourhood,
         feature_extractor=feature_extractor,
+        enable_timing=enable_timing,
     )
 
 
@@ -662,6 +664,7 @@ def run_reconstruction(
             optimisation_iterations=args.optimisation_iterations,
             optimisation_neighbourhood=args.optimisation_neighbourhood,
             feature_extractor=args.feature_extractor,
+            enable_timing=args.enable_timing,
         )
     else:
         raise ValueError("Invalid choice")
@@ -771,6 +774,7 @@ if __name__ == "__main__":
         help="Feature extractors to use",
         choices=list(get_args(FEATURE_EXTRACTOR)),
     )
+    single_parser.add_argument("--enable_timing", action="store_true", help="Enable timing (warmup + disable cache)")
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(

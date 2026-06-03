@@ -52,6 +52,7 @@ class ReconstructArgs:
     optimisation_neighbourhood: int = 10
     feature_extractor: FEATURE_EXTRACTOR = "aliked+sp"
     run_mvs: bool = False
+    enable_timing: bool = False
 
     def __post_init__(self):
         self.name = self.name.strip("/")
@@ -120,6 +121,10 @@ class ReconstructArgs:
 
             if self.save_conf_as_errors:
                 parts.append("errconf")
+
+            if self.enable_timing:
+                parts.append("timing")
+
         elif self.choice == "colmap":
             parts.append(self.colmap_mode)
             if self.camera_type != "SIMPLE_RADIAL":
