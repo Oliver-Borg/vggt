@@ -387,6 +387,16 @@ def load_metrics_to_df(
             sfm_folders,
             series_label_overrides,
         ],
+    ] + [
+        [
+            "gsplat_cfg",
+            os.path.expanduser(
+                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/config.json"
+            ),
+            lambda x, y: {"val_step": i - 1},
+            gsplat_folders,
+            series_label_overrides,
+        ] for i in val_steps
     ]
     i = 0
 
@@ -418,7 +428,7 @@ def load_metrics_to_df(
                             series_label_override = None
 
                         # For gsplat, the folder is 3 levels up from the json file in the original code logic
-                        if source_name == "gsplat":
+                        if source_name == "gsplat" or source_name == "gsplat_cfg":
                             folder_name = file_path.split("/")[-3]
                             key = (key[0], key[1] + "_" + Path(pattern).name)
 
@@ -546,7 +556,7 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
             with open(stat_path, "r") as f:
                 stat_data = json.load(f)
 
-            profiling = stat_data.get("profiling", {})
+            profiling: dict = stat_data.get("profiling", {})
             if profiling:
                 if "used_cache" in profiling:
                     metrics["used_cache"] = profiling.get("used_cache")
@@ -556,6 +566,7 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
                         metrics["inference_time"] = sum(inf_times) / len(inf_times)
                     else:
                         metrics["inference_time"] = profiling.get("warmup_t", 0.0)
+                    metrics["processing_time"] = profiling.get("point_cloud_processing_t", 0.0)
 
                     vram = profiling.get("inference_vram_mb", [0, 0])
                     metrics["peak_memory_mb"] = vram[0] if isinstance(vram, list) and len(vram) > 0 else 0.0
@@ -565,10 +576,12 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
                     vram = profiling.get("colmap_vram_mb", [0, 0])
                     metrics["peak_memory_mb"] = vram[0] if isinstance(vram, list) and len(vram) > 0 else 0.0
                     metrics["peak_memory_reserved_mb"] = vram[1] if isinstance(vram, list) and len(vram) > 1 else 0.0
+                    metrics["processing_time"] = 0.0
         except Exception as e:
             print(f"Failed to load stat.json alongside eval_results.json: {e}")
 
     return metrics
+
 
 def get_quality(psnr: float, ssim: float, lpips: float):
     scaled_psnr = (psnr - 14) / (32 - 14)
@@ -2120,6 +2133,7 @@ def plot_graph(
         {"y": "pred_depth_absrel", "title": "Predicted Depth Abs Rel ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "pred_depth_rmse", "title": "Predicted Depth RMSE ↓", "ylabel": "Loss", "direction": "↓"},
         {"y": "inference_time", "title": "Inference Time ↓", "ylabel": "s", "direction": "↓"},
+        {"y": "processing_time", "title": "Pcd Processing Time ↓", "ylabel": "s", "direction": "↓"},
         {"y": "peak_memory_mb", "title": "Peak Memory ↓", "ylabel": "MB", "direction": "↓"},
         {"y": "peak_memory_reserved_mb", "title": "Peak Memory Reserved ↓", "ylabel": "MB", "direction": "↓"},
     ]
