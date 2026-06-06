@@ -319,6 +319,28 @@ def extract_params(folder_name: str) -> dict[str, str | float | int | None]:
     return params
 
 
+def get_dataset_order(scene_names: list[str]):
+    dataset_order = []
+    for s_name in scene_names:
+        ds_val = "".join([c for c in s_name.replace("_", " ") if not c.isnumeric()]).strip()
+        if ds_val not in dataset_order:
+            dataset_order.append(ds_val)
+    return dataset_order
+
+
+def get_collection_order(scene_names: list[str]):
+    collection_order = []
+    for ds_val in get_dataset_order(scene_names):
+        coll = "other"
+        for k, v in dataset_collections.items():
+            if ds_val in v:
+                coll = k
+                break
+        if coll not in collection_order:
+            collection_order.append(coll)
+    return collection_order
+
+
 def load_metrics_to_df(
     scene_name: str | list[str],
     methods: list[str],
@@ -336,21 +358,6 @@ def load_metrics_to_df(
         scene_names = scene_name
 
     # Extract original dataset order to maintain across all plots/tables
-    dataset_order = []
-    for s_name in scene_names:
-        ds_val = "".join([c for c in s_name.replace("_", " ") if not c.isnumeric()]).strip()
-        if ds_val not in dataset_order:
-            dataset_order.append(ds_val)
-
-    collection_order = []
-    for ds_val in dataset_order:
-        coll = "other"
-        for k, v in dataset_collections.items():
-            if ds_val in v:
-                coll = k
-                break
-        if coll not in collection_order:
-            collection_order.append(coll)
 
     records: dict[int | tuple[str, str], dict] = {}
     sfm_folders = [pair[0] for pair in folders] if folders is not None else []
@@ -358,46 +365,51 @@ def load_metrics_to_df(
     series_label_overrides = [pair[2] for pair in folders] if folders is not None else []
 
     # (source_name, glob_pattern, json_loader_func)
-    sources = [
-        [  # TODO Deal with some results having both
-            "gsplat",
-            os.path.expanduser(  # TODO Add support for train metrics
-                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step"
-                + str(i - 1).zfill(4)
-                + ".json"
-            ),
-            _parse_gsplat_json,
-            gsplat_folders,
-            series_label_overrides,
+    sources = (
+        [
+            # [
+            #     "gsplat_cfg",
+            #     os.path.expanduser(
+            #         "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/config.json"
+            #     ),
+            #     lambda x, y: {"val_step": i - 1},
+            #     gsplat_folders,
+            #     series_label_overrides,
+            # ] for i in val_steps if False
         ]
-        for i in val_steps
-    ] + [
-        [
-            "sfm",
-            os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"),
-            _parse_sfm_json,
-            sfm_folders,
-            series_label_overrides,
-        ],
-    ] + [
-        [
-            "failed_sfm",
-            os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/failed_eval.json"),
-            lambda x, y: {},
-            sfm_folders,
-            series_label_overrides,
-        ],
-    ] + [
-        [
-            "gsplat_cfg",
-            os.path.expanduser(
-                "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/config.json"
-            ),
-            lambda x, y: {"val_step": i - 1},
-            gsplat_folders,
-            series_label_overrides,
-        ] for i in val_steps
-    ]
+        + [
+            [  # TODO Deal with some results having both
+                "gsplat",
+                os.path.expanduser(  # TODO Add support for train metrics
+                    "~/work/git/gsplat/results/{method}_outputs/{scene}_n*_s*/stats/val_step"
+                    + str(i - 1).zfill(4)
+                    + ".json"
+                ),
+                _parse_gsplat_json,
+                gsplat_folders,
+                series_label_overrides,
+            ]
+            for i in val_steps
+        ]
+        + [
+            [
+                "sfm",
+                os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/eval_results.json"),
+                _parse_sfm_json,
+                sfm_folders,
+                series_label_overrides,
+            ],
+        ]
+        + [
+            # [
+            #     "failed_sfm",
+            #     os.path.expanduser("~/work/git/vggt/{method}_outputs/{scene}_n*_s*/failed_eval.json"),
+            #     lambda x, y: {},
+            #     sfm_folders,
+            #     series_label_overrides,
+            # ],
+        ]
+    )
     i = 0
 
     for scene_name in scene_names:
@@ -505,8 +517,12 @@ def load_metrics_to_df(
 
     df = pd.DataFrame(records_list)
     # Convert 'dataset' to ordered Categorical to implicitly enforce input sorting everywhere
-    df["dataset"] = pd.Categorical(df["dataset"], categories=dataset_order, ordered=True)
-    df["dataset_collection"] = pd.Categorical(df["dataset_collection"], categories=collection_order, ordered=True)
+    df["dataset"] = pd.Categorical(df["dataset"], categories=get_dataset_order(scene_names), ordered=True)
+    df["dataset_collection"] = pd.Categorical(
+        df["dataset_collection"], categories=get_collection_order(scene_names), ordered=True
+    )
+
+    df = df.sort_values("dataset")
 
     if "use_gt_extrinsics" in df.columns:
         mask = df["use_gt_extrinsics"] == "GT Extrinsics"
@@ -571,12 +587,42 @@ def _parse_sfm_json(data: Dict, filename: str) -> Dict[str, float | dict[str, fl
                     vram = profiling.get("inference_vram_mb", [0, 0])
                     metrics["peak_memory_mb"] = vram[0] if isinstance(vram, list) and len(vram) > 0 else 0.0
                     metrics["peak_memory_reserved_mb"] = vram[1] if isinstance(vram, list) and len(vram) > 1 else 0.0
+                    processing_vram = profiling.get("point_cloud_processing_vram_mb", [0, 0])
+                    ba_vram = profiling.get("ba_vram_mb", [0, 0])
+                    tracking_vram = profiling.get("tracking_vram_mb", [0, 0])
+                    model_vram = profiling.get("model_vram_mb", [0, 0])
+                    metrics["processing_peak_memory_mb"] = max(
+                        [
+                            (
+                                processing_vram[0]
+                                if isinstance(processing_vram, list) and len(processing_vram) > 0
+                                else 0.0
+                            ),
+                            ba_vram[0] if isinstance(ba_vram, list) and len(ba_vram) > 0 else 0.0,
+                            tracking_vram[0] if isinstance(tracking_vram, list) and len(tracking_vram) > 0 else 0.0,
+                        ]
+                    ) - model_vram[0] if isinstance(model_vram, list) and len(model_vram) > 0 else 0
+                    metrics["processing_peak_memory_reserved_mb"] = max(
+                        [
+                            (
+                                processing_vram[1]
+                                if isinstance(processing_vram, list) and len(processing_vram) > 1
+                                else 0.0
+                            ),
+                            ba_vram[1] if isinstance(ba_vram, list) and len(ba_vram) > 1 else 0.0,
+                            tracking_vram[1] if isinstance(tracking_vram, list) and len(tracking_vram) > 1 else 0.0,
+                        ]
+                    ) - model_vram[1] if isinstance(model_vram, list) and len(model_vram) > 1 else 0
+                    if "num_points" in profiling:
+                        metrics["num_points"] = profiling.get("num_points")
                 elif "colmap_vram_mb" in profiling:
                     metrics["inference_time"] = profiling.get("colmap_t", 0.0)
                     vram = profiling.get("colmap_vram_mb", [0, 0])
                     metrics["peak_memory_mb"] = vram[0] if isinstance(vram, list) and len(vram) > 0 else 0.0
                     metrics["peak_memory_reserved_mb"] = vram[1] if isinstance(vram, list) and len(vram) > 1 else 0.0
                     metrics["processing_time"] = 0.0
+                    metrics["processing_peak_memory_mb"] = 0.0
+                    metrics["processing_peak_memory_reserved_mb"] = 0.0
         except Exception as e:
             print(f"Failed to load stat.json alongside eval_results.json: {e}")
 
@@ -1396,9 +1442,9 @@ def _process_single_render(
             raw_depth = np.zeros((h, w), dtype=np.float32)
             if depth_factors:
                 if w % 7 == 0 and w % 5 != 0:
-                    gt_img, pred_img, _, _, depth, _, _ = divide_img(img, splits=7)
+                    gt_img, pred_img, difference_map, _, depth, _, _ = divide_img(img, splits=7)
                 else:
-                    gt_img, pred_img, _, _, depth = divide_img(img, splits=5)
+                    gt_img, pred_img, difference_map, _, depth = divide_img(img, splits=5)
                 depth = np.array(depth).mean(axis=-1) / 255.0
                 depth *= d_factor or 1.0
                 if max_dist is not None:
@@ -1420,14 +1466,14 @@ def _process_single_render(
                 depth_rgb[zero_depths, :] = 0
                 depth = Image.fromarray(depth_rgb)
             else:
-                gt_img, pred_img, _, _ = divide_img(img, splits=4)
+                gt_img, pred_img, difference_map, _ = divide_img(img, splits=4)
                 depth = None
 
             # Calculate the mean l1 difference and apply the viridis colour map to it
             # difference_map = (np.array(pred_img) - np.array(gt_img)) / 255.0
             # difference_map = np.abs(difference_map).mean(axis=-1)
             # difference_map = Image.fromarray(np_rgb(difference_map, "viridis", vmax=1.0))
-            difference_map = Image.blend(pred_img, gt_img, 0.3)
+            # difference_map = Image.blend(pred_img, gt_img, 0.3)
             return gt_img, pred_img, depth, raw_depth, difference_map
 
         gt_img, pred_img, depth, raw_depth, difference_map = load_and_split(render, depth_factor, max_cam_dist)
@@ -1540,6 +1586,8 @@ def _process_single_render(
                     side_by_side.paste(crop, (0, 0))
                     side_by_side.paste(crop_depth, (cw, 0))
                     crop = side_by_side
+                if difference_map is not None and show_differences:
+                    crop = difference_map.crop((left, top, right, bottom))
 
                 # Resize keeping room for a 5-pixel border (10px total width/height)
                 crop = resize_with_padding(crop, zoom_col_w - 10, c_h - 10)
@@ -1568,7 +1616,9 @@ def _process_single_render(
                 for i, (idx, lbl) in enumerate(zip(idxs_to_show, labels)):
                     if idx < len(render_files):
                         dfactor = depth_factors[idx] if depth_factors else None
-                        alt_gt, alt_pred, alt_depth, _, _ = load_and_split(render_files[idx], dfactor, max_cam_dist)
+                        alt_gt, alt_pred, alt_depth, _, alt_difference = load_and_split(
+                            render_files[idx], dfactor, max_cam_dist
+                        )
                         if show_gt:
                             alt_pred = alt_gt
                         if alt_depth is not None and show_depth:
@@ -1658,7 +1708,7 @@ def create_render_figure(
 
             if file_path and not pd.isna(file_path):
                 p = Path(file_path)
-                if "stats" in p.parts and "val_step" in p.name:
+                if "stats" in p.parts and ("val_step" in p.name or "config.json" in p.name):
                     render_src_dir = p.parents[1] / "renders"
                     folder_name = p.parents[1].name
                 else:
@@ -1771,15 +1821,17 @@ def plot_cameras(
     split_cols = ["dataset"]
     if "seed" in df.columns and df["seed"].nunique() > 1:
         split_cols.append("seed")
-    if "image_mode" in df.columns and df["image_mode"].nunique() > 1:
-        split_cols.append("image_mode")
+    # NOTE This breaks the synthetic scenes because of the hacky fix.
+    # Re-enable when plotting different image_modes
+    # if "image_mode" in df.columns and df["image_mode"].nunique() > 1:
+    #     split_cols.append("image_mode")
 
     grouped = df.groupby(split_cols, dropna=False, observed=True)
     groups_data = []
 
     for group_keys, group_df in grouped:
         # Sort group_df by method column
-        group_df = group_df.sort_values(by="num_images").sort_values(by="method")
+        group_df = group_df.sort_values(by=["method", "num_images"])
         if isinstance(group_keys, str) or not isinstance(group_keys, tuple):
             group_keys = (group_keys,)
 
@@ -1945,7 +1997,9 @@ def plot_graph(
 
     df = load_metrics_to_df(name, methods=["colmap", "vggt", "gt", "combined"], folders=folders, val_steps=val_steps)
     original_name = name
+    dataset_sort_order = []
     if isinstance(name, list):
+        dataset_sort_order = name
         name = ",".join(name)
     if df.empty:
         print("No data found.")
@@ -1978,7 +2032,7 @@ def plot_graph(
         valid_split_cols = [c for c in split_cols if c in df.columns and c != "choice"]
         print(f"Invalid split cols: {set(split_cols) - set(valid_split_cols)}")
 
-    sort_cols = valid_split_cols.copy()
+    sort_cols = ["dataset"] + valid_split_cols.copy()
     if (
         "series_label_override" in df.columns
         and "series_label_override" not in sort_cols
@@ -2132,10 +2186,17 @@ def plot_graph(
         {"y": "pred_depth_l1", "title": "Predicted Depth L1 ↓", "ylabel": "Loss", "direction": "↓"},
         {"y": "pred_depth_absrel", "title": "Predicted Depth Abs Rel ↓", "ylabel": "Score", "direction": "↓"},
         {"y": "pred_depth_rmse", "title": "Predicted Depth RMSE ↓", "ylabel": "Loss", "direction": "↓"},
-        {"y": "inference_time", "title": "Inference Time ↓", "ylabel": "s", "direction": "↓"},
-        {"y": "processing_time", "title": "Pcd Processing Time ↓", "ylabel": "s", "direction": "↓"},
+        {"y": "inference_time", "title": "Inference Time ↓", "ylabel": "seconds", "direction": "↓"},
+        {"y": "processing_time", "title": "Pcd Processing Time ↓", "ylabel": "seconds", "direction": "↓", "ylog": True},
         {"y": "peak_memory_mb", "title": "Peak Memory ↓", "ylabel": "MB", "direction": "↓"},
         {"y": "peak_memory_reserved_mb", "title": "Peak Memory Reserved ↓", "ylabel": "MB", "direction": "↓"},
+        {"y": "processing_peak_memory_mb", "title": "Pcd Processing Peak Memory ↓", "ylabel": "MB", "direction": "↓"},
+        {
+            "y": "processing_peak_memory_reserved_mb",
+            "title": "Pcd Processing Peak Memory Reserved ↓",
+            "ylabel": "MB",
+            "direction": "↓",
+        },
     ]
 
     metrics = {m["y"]: m for m in metrics_config}
@@ -2643,6 +2704,18 @@ def plot_table(
             if col in df.columns:
                 df = df[df[col].isin(vals)]
 
+    # Replace empty strings for camera_src, pcd_src and sampling_mode
+    df["camera_src"] = df["camera_src"].astype(object)
+    df["pcd_src"] = df["pcd_src"].astype(object)
+    df["sampling_mode"] = df["sampling_mode"].astype(object)
+
+    df.loc[(df["camera_src"] == "") | pd.isna(df["camera_src"]), "camera_src"] = df["method"].str.upper() + " Cams"
+    df.loc[(df["pcd_src"] == "") | pd.isna(df["pcd_src"]), "pcd_src"] = df["method"].str.upper() + " Pcd"
+    df.loc[
+        ((df["sampling_mode"] == "") | pd.isna(df["sampling_mode"])) & (df["method"].str.upper() == "COLMAP"),
+        "sampling_mode",
+    ] = "SfM"
+
     # Select relevant columns: choice, x_axis, split params, and metrics
     columns_to_include = ["choice"]
 
@@ -2672,10 +2745,7 @@ def plot_table(
     columns_to_include = [col for col in columns_to_include if col in df.columns]
 
     # Remove columns from columns_to_include if all values in the column are null or ""
-    columns_to_include = [
-        col for col in columns_to_include
-        if not (df[col].isna() | (df[col] == "")).all()
-    ]
+    columns_to_include = [col for col in columns_to_include if not (df[col].isna() | (df[col] == "")).all()]
 
     non_metric_cols = [col for col in columns_to_include if col not in metric_keys or col in split_cols]
     if "series_label_override" in columns_to_include and "series_label_override" not in non_metric_cols:
@@ -2895,7 +2965,9 @@ def plot_table(
     joined_bodies = f"\n{rule_cmd}\n".join(latex_bodies)
     latex_table = f"{header_part}\n{joined_bodies}\n{footer_part}"
 
-    latex_table = latex_table.replace("\\begin{tabular}", "\\centering\n\\scriptsize\n\\begin{tabular}")
+    size = "scriptsize" if len(df_table_renamed.columns) < 10 else "tiny"
+
+    latex_table = latex_table.replace("\\begin{tabular}", "\\centering\n\\" + size + "\n\\begin{tabular}")
 
     # Ensure the unformatted df used for the CSV matches the filtered rows if applicable
     if only_best_rows:
