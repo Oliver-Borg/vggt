@@ -256,7 +256,7 @@ def plot_point_clouds(
     view_mode: str = "isometric",
     draw_frustum: bool = False,
     stack_dataset_renders_horizontally: bool = True,
-    show_gt: bool = True,
+    show_gt: bool = False,
     show_differences: bool = False,
 ):
     """Projects point clouds to 2D images using Open3D rendering and Matplotlib."""
@@ -270,6 +270,7 @@ def plot_point_clouds(
     # Sort the dataframe by method and the custom sampling_mode order
     if "method" in df.columns and "sampling_mode" in df.columns:
         sampling_order = ["ba", "confidence", "random", "voxels", "imagefps"]
+        method_order = ["colmap", "vggt", "combined", "gt"]
 
         # Append any unknown sampling modes to the end to prevent data loss or NaNs
         existing_modes = df["sampling_mode"].dropna().unique().tolist()
@@ -278,8 +279,11 @@ def plot_point_clouds(
                 sampling_order.append(mode)
 
         df["sampling_mode"] = pd.Categorical(df["sampling_mode"], categories=sampling_order, ordered=True)
+        df["method"] = pd.Categorical(df["method"], categories=method_order, ordered=True)
         df = df.sort_values(by=["method", "sampling_mode"])
     elif "method" in df.columns:
+        method_order = ["colmap", "vggt", "combined", "gt"]
+        df["method"] = pd.Categorical(df["method"], categories=method_order, ordered=True)
         df = df.sort_values(by=["method"])
 
     point_clouds = []
@@ -446,9 +450,10 @@ def plot_point_clouds(
             grid_positions.append((r_main, c_base, c_base + 1, c_gt_idx, c_diff_idx, c_filt_idx))
 
     # Calculate proportional figure height to maintain roughly square subplots
-    fig_height = (width / max(1, cols)) * total_rows * aspect_ratio
+    fig_width = width / 3 * cols
+    fig_height = (fig_width / max(1, cols)) * total_rows * aspect_ratio
 
-    fig, axes = plt.subplots(total_rows, cols, figsize=(width, fig_height), dpi=100, squeeze=False)
+    fig, axes = plt.subplots(total_rows, cols, figsize=(fig_width, fig_height), dpi=100, squeeze=False)
 
     # We use very tight wspace/hspace to maximize image space
     fig.subplots_adjust(left=0.01, right=0.99, top=0.99, bottom=0.05, wspace=0.01, hspace=0.1)
