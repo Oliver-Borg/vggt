@@ -178,6 +178,7 @@ class VGGTProfiling(TypedDict):
     used_track_cache: bool
     ba_t: float
     ba_vram_mb: tuple[float, float]
+    num_points: int
 
 
 def save_depths(path: str, depths: np.ndarray, raw_confs: np.ndarray, viz_confs: np.ndarray, camera_names: list[str]):
@@ -968,6 +969,7 @@ def run_vggt(
         used_track_cache=used_track_cache,
         ba_t=ba_t,
         ba_vram_mb=ba_vram_mb,
+        num_points=points_3d.shape[0],
     )
 
 
