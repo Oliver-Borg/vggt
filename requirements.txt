@@ -8,4 +8,8 @@ safetensors
 open3d
 accelerate
 xformers
-opencv-python
+gradio
+opencv-python-headless
+line_profiler
+# pip install torch-cluster -f https://data.pyg.org/whl/torch-2.3.1+cu121.html
+# conda install colmap -c conda-forge
