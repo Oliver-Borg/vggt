@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 import scienceplots
 
 from .plot_cameras import CameraSeries, plot_extrinsics, _get_global_alignment, _calculate_all_errors
-from .cam_utils import load_poses_from_json
+from .cam_utils import load_image_sizes_from_json, load_intrinsics_from_json, load_poses_from_json
 from .plot_point_cloud import plot_point_clouds
 from .plot_depth_preds import create_depth_conf_figure
 from .plot_utils import add_text_to_image, np_rgb, resize_with_padding, save_figure_tex, stack_images_with_wrap
@@ -478,6 +478,7 @@ def load_metrics_to_df(
                         record["file_path"] = file_path
                         record[f"{source_name}_file_path"] = file_path
                         record["folder"] = folder_name
+                        record[f"{source_name}_folder"] = folder_name
                         if source_name == "gsplat":
                             records[key] = record
                         else:
@@ -1694,7 +1695,7 @@ def create_render_figure(
         max_cols = len(unique_datasets)
 
     image_width = 600
-    image_height = 400 if any({"bicycle", "bonsai"} & set(unique_datasets)) else 600
+    image_height = 400 if any({"bicycle", "bonsai", "kitchen", "stump"} & set(unique_datasets)) else 600
 
     for dataset in unique_datasets:
         dataset_df = df[df["dataset"] == dataset]
@@ -1842,6 +1843,8 @@ def plot_cameras(
         group_suffix = "-".join(group_suffix_parts) if group_suffix_parts else "default"
 
         best_gt_poses = {}
+        best_gt_intrinsics = {}
+        best_gt_imsizes = {}
         for i, (idx, row) in enumerate(group_df.iterrows()):
             file_path = row.get("sfm_file_path", "")
             if not file_path or pd.isna(file_path):
@@ -1854,6 +1857,8 @@ def plot_cameras(
                     poses = load_poses_from_json(pose_file)
                     if len(poses) > len(best_gt_poses):
                         best_gt_poses = poses
+                        best_gt_intrinsics = load_intrinsics_from_json(pose_file)
+                        best_gt_imsizes = load_image_sizes_from_json(pose_file)
 
         if not best_gt_poses:
             continue
@@ -1872,12 +1877,17 @@ def plot_cameras(
                     pose_file = p.parent / "aligned_cameras.json"
 
             poses_data = {}
+            intrinsics_data = {}
+            imsizes_data = {}
+
             if pose_file is not None and pose_file.exists():
                 # Ensure we only plot each configuration alignment once
                 if pose_file in seen_pose_files:
                     continue
                 seen_pose_files.add(pose_file)
                 poses_data = load_poses_from_json(pose_file)
+                intrinsics_data = load_intrinsics_from_json(pose_file)
+                imsizes_data = load_image_sizes_from_json(pose_file)
 
             if pd.notna(row.get("series_label_override")):
                 config_name = str(row.get("series_label_override"))
@@ -1908,7 +1918,11 @@ def plot_cameras(
                 label=config_name,
                 colour=color,
                 poses=poses_data,
+                params=intrinsics_data,
+                image_sizes=imsizes_data,
                 gt_poses=best_gt_poses,
+                gt_params=best_gt_intrinsics,
+                gt_image_sizes=best_gt_imsizes,
                 image_names=list(best_gt_poses.keys()),  # Temporary: need to update to num_images image_names
                 image_name_key=f"{dataset_name}_{seed}_{image_mode}_{num_images}",
             )
@@ -2039,16 +2053,17 @@ def plot_graph(
         and df["series_label_override"].notna().any()
     ):
         sort_cols.insert(0, "series_label_override")
-    if "choice" in df.columns:
-        sort_cols.append("choice")
-    elif "method" in df.columns:
+    if "method" in df.columns:
         sort_cols.append("method")
+    elif "choice" in df.columns:
+        sort_cols.append("choice")
 
     if x_axis:
         sort_cols.append(x_axis)
 
     if sort_cols:
         df = df.sort_values(by=sort_cols)
+        # df = df.sort_values(by=sort_cols, ascending=False)
 
     if valid_split_cols:
         if "series_label_override" in valid_split_cols:
@@ -2473,12 +2488,15 @@ def plot_graph(
     if render_folders is not None:
         render_out_base = Path(suffix + "_renders")
         # Use render_folders to filter df based on "folder" column
-        render_df = df[df["folder"].isin(render_folders)]
+        render_df = df[df["gsplat_folder"].isin(render_folders)]
 
         if not render_df.empty:
             render_df = render_df[render_df["val_step"] == max(render_df["val_step"])]
 
         if not render_df.empty:
+            render_df = render_df.assign(
+                gsplat_folder=pd.Categorical(render_df["gsplat_folder"], categories=list(set(render_folders)), ordered=True)
+            ).sort_values("gsplat_folder")
             create_render_figure(
                 render_df,
                 render_out_base,

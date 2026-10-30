@@ -6,10 +6,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as lines
 import matplotlib.colors as clrs
+import matplotlib.patches as patches
 from pathlib import Path
 
 from .cam_alignment import get_alignment_rotation
-from .cam_utils import load_poses_from_json
+from .cam_utils import load_image_sizes_from_json, load_intrinsics_from_json, load_poses_from_json
 
 
 @dataclass
@@ -17,9 +18,54 @@ class CameraSeries:
     label: str
     colour: tuple[float, float, float] | tuple[float, float, float, float]
     poses: dict[str, np.ndarray]
+    params: dict[str, np.ndarray]
+    image_sizes: dict[str, tuple[int, int]]
     gt_poses: dict[str, np.ndarray]
+    gt_params: dict[str, np.ndarray]
+    gt_image_sizes: dict[str, tuple[int, int]]
     image_names: list[str]
     image_name_key: str = "default"
+
+
+def get_camera_triangle(
+    c2w: np.ndarray,
+    intrinsics: np.ndarray,
+    image_size: tuple[int, int],
+    size: float = 1.0,
+):
+    """
+    Create top down frustum. Return three points for the triangle.
+
+    Args:
+        pose: (4, 4) Camera-to-World matrix.
+        intrinsics: (3, 3) Pinhole intrinsics matrix [[fx, 0, cx], [0, fy, cy], [0, 0, 1]].
+        image_size: (W, H) tuple of image dimensions.
+    """
+    W, H = image_size
+    fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+    cx, cy = intrinsics[0, 2], intrinsics[1, 2]
+
+    # 1. Define the 4 corners of the image plane + the camera center (0,0,0)
+    # The depth of the frustum base is determined by 'size' (z = size)
+    # x = (u - cx) * z / fx
+    # y = (v - cy) * z / fy
+
+    # Corners in pixel coordinates: Top-Left, Top-Right, Bottom-Right, Bottom-Left
+    corners_pix = np.array([[0, 0], [W, 0], [W, H], [0, H]])
+
+    corners_cam = np.zeros((5, 3))
+    # Point 0 is the camera center
+    corners_cam[0] = [0, 0, 0]
+
+    # Points 1-4 are the image corners projected to depth = size
+    corners_cam[1:, 0] = (corners_pix[:, 0] - cx) * size / fx
+    corners_cam[1:, 1] = (corners_pix[:, 1] - cy) * size / fy
+    corners_cam[1:, 2] = size
+
+    # 2. Transform to world coordinates
+    # Apply rotation (3x3) and translation (3x1)
+    pts_world = (c2w[:3, :3] @ corners_cam.T + c2w[:3, 3:4]).T
+    return pts_world[:3]
 
 
 def _get_global_alignment(
@@ -76,6 +122,8 @@ def _calculate_all_errors(
 @profile
 def plot_cameras(
     poses: dict[str, np.ndarray],
+    intrinsics: dict[str, np.ndarray],
+    image_sizes: dict[str, tuple[int, int]],
     colors: dict[str, tuple[float, float, float, float] | tuple[float, float, float] | None],
     title: str | None = None,
     linked_poses: dict[str, list[str]] | None = None,
@@ -84,6 +132,7 @@ def plot_cameras(
     max_error_override: float | None = None,
     R_align_override: np.ndarray | None = None,
     errors_override: dict[str, float] | None = None,
+    use_arrows: bool = True,
 ):
     ax = plt.gca()
     poses_list = list(poses.values())
@@ -97,6 +146,10 @@ def plot_cameras(
         R_align = get_alignment_rotation(np.array(poses_list))
 
     aligned_centers = {name: R_align @ c2w[:3, 3] for name, c2w in poses.items()}
+
+    frustum_points = {
+        name: get_camera_triangle(c2w, intrinsics[name], image_sizes[name]) for name, c2w in poses.items()
+    }
 
     if use_error and linked_poses and gt_label:
         errors = {}
@@ -167,6 +220,7 @@ def plot_cameras(
 
     xs, ys = [], []
     dxs, dys = [], []
+    triangles = []
     colors_list = []
     is_ups = []
 
@@ -179,11 +233,18 @@ def plot_cameras(
         center = aligned_centers[name]
         # Look direction in world coordinates: Z-axis of c2w
         look_dir = R_align @ c2w[:3, 2]
+        frustum_list = list(frustum_points[name])
+        for i in range(len(frustum_list)):
+            frustum_list[i] = R_align @ frustum_list[i]
+        assert (frustum_list[0] == center).all()
+        aligned_frustum_points = np.array(frustum_list)
 
         # True if looking up (positive Z), False if looking down
         is_ups.append(look_dir[2] > 0)
         look_dir[:norm_dim] = look_dir[:norm_dim] / np.linalg.norm(look_dir[:norm_dim]) * line_length
         look_dir[2] = 0.0
+
+        triangles.append(aligned_frustum_points[:, :2])
 
         xs.append(center[0])
         ys.append(center[1])  # Projecting onto Top-down X-Y plane
@@ -228,7 +289,12 @@ def plot_cameras(
             marker="x",
         )
 
-    ax.quiver(xs, ys, dxs, dys, color=colors_list, angles="xy", scale_units="xy", scale=0.5, width=0.0015, zorder=1)
+    if use_arrows:
+        ax.quiver(xs, ys, dxs, dys, color=colors_list, angles="xy", scale_units="xy", scale=0.5, width=0.0015, zorder=1)
+    else:
+        for triangle, color in zip(triangles, colors_list):
+            opa_color = (*color[:3], 0.5)
+            ax.add_patch(patches.Polygon(triangle, color=opa_color, fill=True, zorder=1))
 
     if title is not None:
         ax.set_title(title, fontsize=12)
@@ -309,6 +375,8 @@ def plot_extrinsics(
             plt.sca(ax)
 
             combined_poses: dict[str, np.ndarray] = {}
+            combined_intrinsics: dict[str, np.ndarray] = {}
+            combined_image_sizes: dict[str, tuple[int, int]] = {}
             colours = {}
             linked_poses = defaultdict(list)
 
@@ -317,6 +385,8 @@ def plot_extrinsics(
                 if series.image_names is not None and k not in series.image_names:
                     continue
                 combined_poses[gt_label + k] = v
+                combined_intrinsics[gt_label + k] = series.gt_params[k]
+                combined_image_sizes[gt_label + k] = series.gt_image_sizes[k]
                 colours[gt_label + k] = gt_colour
                 linked_poses[k].append(gt_label + k)
 
@@ -325,6 +395,8 @@ def plot_extrinsics(
                 if series.image_names is not None and k not in series.image_names:
                     continue
                 combined_poses[series.label + k] = v
+                combined_intrinsics[series.label + k] = series.params[k]
+                combined_image_sizes[series.label + k] = series.image_sizes[k]
                 if use_error_colors:
                     colours[series.label + k] = None
                 else:
@@ -344,6 +416,8 @@ def plot_extrinsics(
 
             plot_cameras(
                 combined_poses,
+                combined_intrinsics,
+                combined_image_sizes,
                 colours,
                 linked_poses=linked_poses,
                 use_error=use_error_colors,
@@ -462,8 +536,24 @@ if __name__ == "__main__":
     assert args.pred_path.endswith(".json")
 
     gt_poses = load_poses_from_json(Path(args.gt_path))
+    gt_intrinsics = load_intrinsics_from_json(Path(args.gt_path))
+    gt_imsizes = load_image_sizes_from_json(Path(args.gt_path))
 
-    pred_series = CameraSeries("pred_", (1.0, 0.0, 0.0, 0.5), load_poses_from_json(Path(args.pred_path)), gt_poses)
+    pred_poses = load_poses_from_json(Path(args.pred_path))
+    pred_intrinsics = load_intrinsics_from_json(Path(args.pred_path))
+    pred_imsizes = load_image_sizes_from_json(Path(args.pred_path))
+
+    pred_series = CameraSeries(
+        "pred_",
+        (1.0, 0.0, 0.0, 0.5),
+        pred_poses,
+        pred_intrinsics,
+        pred_imsizes,
+        gt_poses,
+        gt_intrinsics,
+        gt_imsizes,
+        list(gt_poses.keys()),
+    )
 
     plot_extrinsics(
         groups_data=[("default", [pred_series], None)],

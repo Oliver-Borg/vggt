@@ -45,6 +45,16 @@ def c2w_to_w2c(translation: np.ndarray, rotation_matrix: np.ndarray) -> tuple[np
 def w2c_to_c2w(translation: np.ndarray, rotation_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return invert_transform(translation, rotation_matrix)
 
+# out_data[img.name] = {
+#     "camera_id": img.camera_id,
+#     "model": str(cam.model),
+#     "width": cam.width,
+#     "height": cam.height,
+#     "params": cam.params.tolist(),
+#     "params_info": cam.params_info,
+#     "extrinsics": {"qvec": rot_quat.tolist(), "tvec": translation.tolist()},
+# }
+
 
 def load_poses_from_json(path: Path) -> dict[str, np.ndarray]:
     with open(path, "r") as f:
@@ -58,6 +68,31 @@ def load_poses_from_json(path: Path) -> dict[str, np.ndarray]:
         c2w = build_matrix(tvec, rotation_matrix)
         poses[image_name] = c2w
     return poses
+
+
+def load_intrinsics_from_json(path: Path) -> dict[str, np.ndarray]:
+    with open(path, "r") as f:
+        data = json.load(f)
+    intrinsics = {}
+    for image_name, frame in data.items():
+        params = {k: v for k, v in zip(frame["params_info"].split(", "), frame["params"])}
+        intrinsic = np.zeros((3, 3), dtype=np.float32)
+        intrinsic[0, 0] = params.get("fx") or params.get("f")
+        intrinsic[0, 1] = params.get("k", 0.0)
+        intrinsic[1, 1] = params.get("fy") or params.get("f")
+        intrinsic[0, 2] = params["cx"]
+        intrinsic[1, 2] = params["cy"]
+        intrinsics[image_name] = intrinsic
+    return intrinsics
+
+
+def load_image_sizes_from_json(path: Path) -> dict[str, tuple[int, int]]:
+    with open(path, "r") as f:
+        data = json.load(f)
+    image_sizes = {}
+    for image_name, frame in data.items():
+        image_sizes[image_name] = (frame["width"], frame["height"])
+    return image_sizes
 
 
 def umeyama_alignment_two_points(
