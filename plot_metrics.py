@@ -161,6 +161,18 @@ regexes = [
         default="",
     ),
     Param(
+        name="sampler",
+        pattern=r"_sampler(\d+p\d+e\d+)",
+        cast=str,
+        default="",
+    ),
+    Param(
+        name="sampler_lr",
+        pattern=r"_slr(\d+\.\d+|\d+)",
+        cast=float,
+        default=None,
+    ),
+    Param(
         name="eval_opt",
         pattern=r"_(evalopt)",
         cast=lambda x: "Eval Pose Opt" if x == "evalopt" else "",

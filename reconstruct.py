@@ -251,6 +251,7 @@ def run_vggt_pipeline(
     optimisation_neighbourhood: int = 10,
     feature_extractor: str = "aliked+sp",
     enable_timing: bool = False,
+    save_full_pcd: bool = False,
 ) -> VGGTProfiling:
     """Executes the VGGT transformer-based reconstruction"""
     return run_vggt(
@@ -272,6 +273,7 @@ def run_vggt_pipeline(
         optimisation_neighbourhood=optimisation_neighbourhood,
         feature_extractor=feature_extractor,
         enable_timing=enable_timing,
+        save_full_pcd=save_full_pcd,
     )
 
 
@@ -665,6 +667,7 @@ def run_reconstruction(
             optimisation_neighbourhood=args.optimisation_neighbourhood,
             feature_extractor=args.feature_extractor,
             enable_timing=args.enable_timing,
+            save_full_pcd=args.save_full_pcd,
         )
     else:
         raise ValueError("Invalid choice")
@@ -775,6 +778,9 @@ if __name__ == "__main__":
         choices=list(get_args(FEATURE_EXTRACTOR)),
     )
     single_parser.add_argument("--enable_timing", action="store_true", help="Enable timing (warmup + disable cache)")
+    single_parser.add_argument(
+        "--save_full_pcd", action="store_true", help="Also save the full point cloud to sparse/points_full.npz"
+    )
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
     batch_parser.add_argument(

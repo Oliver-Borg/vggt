@@ -53,6 +53,7 @@ class ReconstructArgs:
     feature_extractor: FEATURE_EXTRACTOR = "aliked+sp"
     run_mvs: bool = False
     enable_timing: bool = False
+    save_full_pcd: bool = False
 
     def __post_init__(self):
         self.name = self.name.strip("/")
@@ -124,6 +125,9 @@ class ReconstructArgs:
 
             if self.enable_timing:
                 parts.append("timing")
+
+            if self.save_full_pcd:
+                parts.append("fullpcd")
 
         elif self.choice == "colmap":
             parts.append(self.colmap_mode)

@@ -90,6 +90,12 @@ def parse_args():
     parser.add_argument(
         "--feature_extractor", type=str, default="aliked+sp", help="Feature extractor to use (e.g., sift, aliked+sp)"
     )
+    parser.add_argument(
+        "--save_full_pcd",
+        action="store_true",
+        default=False,
+        help="Also save every confidence-filtered point to sparse/points_full.npz (before point-limit sampling)",
+    )
     return parser.parse_args()
 
 
@@ -156,6 +162,7 @@ def demo_fn(args):
         optimisation_iterations=args.optimisation_iterations,
         optimisation_neighbourhood=args.optimisation_neighbourhood,
         feature_extractor=args.feature_extractor,
+        save_full_pcd=args.save_full_pcd,
     )
 
 
@@ -420,6 +427,7 @@ def run_vggt(
     optimisation_neighbourhood: int = 10,
     feature_extractor: str = "aliked+sp",
     enable_timing: bool = False,
+    save_full_pcd: bool = False,
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -846,6 +854,13 @@ def run_vggt(
                 extrinsic, intrinsic, depth_map, conf_mask, near_filtering_strength, near_filtering_quorum
             )
 
+        if save_full_pcd:
+            full_pcd = {
+                "xyz": points_3d[conf_mask].astype(np.float32),
+                "rgb": points_rgb[conf_mask],
+                "conf": depth_conf[conf_mask].astype(np.float32),
+            }
+
         # at most writing 100000 3d points to colmap reconstruction object
         if sampling_mode == "random" or sampling_mode == "confidence":
             conf_mask = randomly_limit_trues(
@@ -946,6 +961,10 @@ def run_vggt(
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(scene_dir, "sparse/points.ply"))
     if points_conf_rgb is not None:
         trimesh.PointCloud(points_3d, colors=points_conf_rgb).export(os.path.join(scene_dir, "sparse/points_conf.ply"))
+    if save_full_pcd:
+        if sampling_mode == "ba":
+            raise ValueError("save_full_pcd is not supported with sampling_mode='ba'")
+        np.savez_compressed(os.path.join(scene_dir, "sparse/points_full.npz"), **full_pcd)
     saving_t2 = time.time()
 
     save_cameras_json(reconstruction, Path(scene_dir) / "cameras.json")
