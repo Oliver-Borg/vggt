@@ -173,6 +173,12 @@ regexes = [
         default=None,
     ),
     Param(
+        name="vggt_ft",
+        pattern=r"_vft-([^_]+)",
+        cast=str,
+        default="",
+    ),
+    Param(
         name="eval_opt",
         pattern=r"_(evalopt)",
         cast=lambda x: "Eval Pose Opt" if x == "evalopt" else "",
