@@ -400,6 +400,54 @@ def knn(positions: np.ndarray, i: int, k: int) -> np.ndarray:
     return sorted_indices[:k]
 
 
+OMEGA_PYTHON = os.environ.get("VGGT_OMEGA_PYTHON", os.path.expanduser("~/.conda/envs/vggt-omega/bin/python"))
+
+
+def run_omega_inference(scene_dir: str, cache_file: str, checkpoint: str, seed: int):
+    """Runs `omega_infer.py` in the VGGT-Omega env, which writes the raw-prediction cache `cache_file`."""
+    import subprocess
+
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["PATH"] = os.path.dirname(OMEGA_PYTHON) + os.pathsep + env.get("PATH", "")
+    subprocess.run(
+        [
+            OMEGA_PYTHON,
+            "omega_infer.py",
+            "--scene_dir",
+            scene_dir,
+            "--cache_file",
+            cache_file,
+            "--checkpoint",
+            checkpoint,
+            "--seed",
+            str(seed),
+        ],
+        check=True,
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        env=env,
+    )
+
+
+def rescale_colmap_recons_nonsquare(reconstruction, image_paths, original_coords, net_hw):
+    """Omega counterpart of `rename_colmap_recons_and_rescale_camera`: images are not padded, so the cameras (PINHOLE,
+    network resolution `net_hw`) are scaled per axis to the original image size, principal point at the centre."""
+    net_h, net_w = net_hw
+    for pyimageid in reconstruction.images:
+        pyimage = reconstruction.images[pyimageid]
+        pycamera = reconstruction.cameras[pyimage.camera_id]
+        pyimage.name = image_paths[pyimageid - 1]
+        orig_w, orig_h = (float(v) for v in original_coords[pyimageid - 1, -2:])
+        rx, ry = orig_w / net_w, orig_h / net_h
+        fx, fy = pycamera.params[0] * rx, pycamera.params[1] * ry
+        pycamera.params = np.array([fx, fy, orig_w / 2, orig_h / 2])
+        pycamera.width = int(orig_w)
+        pycamera.height = int(orig_h)
+        for point2D in pyimage.points2D:
+            point2D.xy = point2D.xy * np.array([rx, ry])
+    return reconstruction
+
+
 @profile
 def run_vggt(
     scene_dir: str,
@@ -428,6 +476,8 @@ def run_vggt(
     feature_extractor: str = "aliked+sp",
     enable_timing: bool = False,
     save_full_pcd: bool = False,
+    model_type: str = "vggt",
+    omega_checkpoint: str = "512",
 ) -> VGGTProfiling:
 
     # Print configuration
@@ -492,6 +542,16 @@ def run_vggt(
 
     used_cache = False
     cache_load_t = 0.0
+
+    omega = model_type == "omega"
+    if omega:
+        # VGGT-Omega only predicts cameras and depth (no tracks, so no BA); its inference runs in its own conda env
+        # and writes the same raw-prediction cache, which the rest of this function then consumes
+        assert cache_file is not None, "model_type=omega needs a cache_dir (and no enable_timing)"
+        assert not use_ba and sampling_mode != "ba"
+        assert not reconstruct_pose_opt and optimisation_iterations == 0
+        if not os.path.exists(cache_file):
+            run_omega_inference(scene_dir, cache_file, omega_checkpoint, seed)
 
     if cache_file and os.path.exists(cache_file):
         print(f"Loading cached raw predictions from {cache_file}")
@@ -595,7 +655,7 @@ def run_vggt(
             )
 
     model_load_t1 = time.time()
-    if model is None:
+    if model is None and not omega:
         model = load_model()
     model_load_t2 = time.time()
     model_alloc, model_res = model_vram_mb = get_gpu_stats()
@@ -825,14 +885,18 @@ def run_vggt(
             camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
 
         image_size = np.array([vggt_fixed_resolution, vggt_fixed_resolution])
+        if omega:
+            image_size = np.array([images.shape[-1], images.shape[-2]])  # (W, H), not padded
         num_frames, height, width, _ = points_3d.shape
         if shared_camera:
             # Use the first camera's intrinsic for all cameras if shared_camera is True
             intrinsic = np.tile(intrinsic[0:1], (num_frames, 1, 1))
 
-        points_rgb = F.interpolate(
-            images, size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="bilinear", align_corners=False
-        )
+        points_rgb = images
+        if not omega:
+            points_rgb = F.interpolate(
+                images, size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="bilinear", align_corners=False
+            )
         points_rgb = (points_rgb.cpu().numpy() * 255).astype(np.uint8)
         points_rgb = points_rgb.transpose(0, 2, 3, 1)
 
@@ -937,15 +1001,21 @@ def run_vggt(
 
         reconstruction_resolution = vggt_fixed_resolution
 
-    reconstruction = rename_colmap_recons_and_rescale_camera(
-        reconstruction,
-        base_image_path_list,
-        original_coords.cpu().numpy(),
-        img_size=reconstruction_resolution,
-        camera_type=camera_type,
-        shift_point2d_to_original_res=True,
-        shared_camera=shared_camera,
-    )
+    if omega:
+        assert not shared_camera
+        reconstruction = rescale_colmap_recons_nonsquare(
+            reconstruction, base_image_path_list, original_coords.cpu().numpy(), tuple(images.shape[-2:])
+        )
+    else:
+        reconstruction = rename_colmap_recons_and_rescale_camera(
+            reconstruction,
+            base_image_path_list,
+            original_coords.cpu().numpy(),
+            img_size=reconstruction_resolution,
+            camera_type=camera_type,
+            shift_point2d_to_original_res=True,
+            shared_camera=shared_camera,
+        )
     processing_t2 = time.time()
     processing_vram_mb = get_gpu_stats()
 

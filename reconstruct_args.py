@@ -23,6 +23,14 @@ SAMPLING_MODE = Literal[
     "imagefreqvoxels",
 ]
 FEATURE_EXTRACTOR = Literal["sift", "sp", "aliked", "aliked+sp", "aliked+sp+sift"]
+RECON_MODEL = Literal["vggt", "omega"]
+OMEGA_CHECKPOINT = Literal["512", "416"]
+# (checkpoint file, image_resolution of the preprocessing) of the VGGT-Omega checkpoints; 416 is the retrained
+# "reproduce" checkpoint of the VGGT-Omega repository (reproduction.md), 512 the original release
+OMEGA_CHECKPOINTS = {
+    "512": ("~/work/checkpoints/vggt-omega/vggt_omega_1b_512.pt", 512),
+    "416": ("~/work/checkpoints/vggt-omega/vggt_omega_1b_416_reproduce.pt", 416),
+}
 
 
 @dataclass
@@ -54,10 +62,24 @@ class ReconstructArgs:
     run_mvs: bool = False
     enable_timing: bool = False
     save_full_pcd: bool = False
+    model: RECON_MODEL = "vggt"
+    omega_checkpoint: OMEGA_CHECKPOINT = "512"
 
     def __post_init__(self):
         self.name = self.name.strip("/")
         self.input = self.input
+        if self.model == "omega":
+            # Omega only predicts cameras and depth: no tracks, so no BA
+            assert self.choice == "vggt", "model=omega is a backend of choice=vggt"
+            assert not self.use_ba and self.sampling_mode != "ba", "Omega has no track head, so no BA"
+            assert not self.reconstruct_pose_opt and self.optimisation_iterations == 0
+
+    @property
+    def model_token(self) -> str | None:
+        """Run-name token of the Omega backend (None for VGGT, whose names are unchanged)."""
+        if self.model != "omega" or self.choice != "vggt":
+            return None
+        return "omega" if self.omega_checkpoint == "512" else f"omega{self.omega_checkpoint}"
 
     @property
     def cache_name(self):
@@ -68,6 +90,8 @@ class ReconstructArgs:
         if self.num_images:
             cache_parts.append(f"n{self.num_images}")
         cache_parts.append(f"s{self.seed}")
+        if self.model_token:
+            cache_parts.append(self.model_token)
         cache_parts.append(self.image_mode)
 
         if self.choice == "colmap":
@@ -96,6 +120,9 @@ class ReconstructArgs:
             parts.append(f"n{self.num_images}")
 
         parts.append(f"s{self.seed}")
+
+        if self.model_token:
+            parts.append(self.model_token)
 
         if self.choice == "vggt":
             if self.sampling_mode == "ba" or self.use_ba:

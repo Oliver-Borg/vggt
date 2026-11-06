@@ -179,6 +179,18 @@ regexes = [
         default="",
     ),
     Param(
+        name="omega",
+        pattern=r"_s\d+_(omega\d*)_",
+        cast=str,
+        default="",
+    ),
+    Param(
+        name="camft",
+        pattern=r"_cft-([^_]+)",
+        cast=str,
+        default="",
+    ),
+    Param(
         name="eval_opt",
         pattern=r"_(evalopt)",
         cast=lambda x: "Eval Pose Opt" if x == "evalopt" else "",

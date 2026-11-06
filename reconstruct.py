@@ -28,11 +28,13 @@ from reconstruct_args import (
     COPY_MODE,
     FEATURE_EXTRACTOR,
     IMAGE_MODE,
+    OMEGA_CHECKPOINT,
+    RECON_MODEL,
     SAMPLING_MODE,
     ReconstructArgs,
 )
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "3")
 
 
 class GPUMonitor(threading.Thread):
@@ -252,8 +254,10 @@ def run_vggt_pipeline(
     feature_extractor: str = "aliked+sp",
     enable_timing: bool = False,
     save_full_pcd: bool = False,
+    model: str = "vggt",
+    omega_checkpoint: str = "512",
 ) -> VGGTProfiling:
-    """Executes the VGGT transformer-based reconstruction"""
+    """Executes the VGGT (or VGGT-Omega) transformer-based reconstruction"""
     return run_vggt(
         scene_dir=base_out,
         num_profiling_runs=3,
@@ -274,6 +278,8 @@ def run_vggt_pipeline(
         feature_extractor=feature_extractor,
         enable_timing=enable_timing,
         save_full_pcd=save_full_pcd,
+        model_type=model,
+        omega_checkpoint=omega_checkpoint,
     )
 
 
@@ -668,6 +674,8 @@ def run_reconstruction(
             feature_extractor=args.feature_extractor,
             enable_timing=args.enable_timing,
             save_full_pcd=args.save_full_pcd,
+            model=args.model,
+            omega_checkpoint=args.omega_checkpoint,
         )
     else:
         raise ValueError("Invalid choice")
@@ -780,6 +788,16 @@ if __name__ == "__main__":
     single_parser.add_argument("--enable_timing", action="store_true", help="Enable timing (warmup + disable cache)")
     single_parser.add_argument(
         "--save_full_pcd", action="store_true", help="Also save the full point cloud to sparse/points_full.npz"
+    )
+    single_parser.add_argument(
+        "--model", type=str, default="vggt", choices=list(get_args(RECON_MODEL)), help="Feed-forward model (choice=vggt)"
+    )
+    single_parser.add_argument(
+        "--omega_checkpoint",
+        type=str,
+        default="512",
+        choices=list(get_args(OMEGA_CHECKPOINT)),
+        help="VGGT-Omega checkpoint (512: original release, 416: retrained reproduction)",
     )
 
     batch_parser = subparsers.add_parser("batch", help="Run multiple reconstructions from a JSON config file")
