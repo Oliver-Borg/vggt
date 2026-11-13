@@ -2531,7 +2531,7 @@ def plot_graph(
 
         if not render_df.empty:
             render_df = render_df.assign(
-                gsplat_folder=pd.Categorical(render_df["gsplat_folder"], categories=list(set(render_folders)), ordered=True)
+                gsplat_folder=pd.Categorical(render_df["gsplat_folder"], categories=list(dict.fromkeys(render_folders)), ordered=True)
             ).sort_values("gsplat_folder")
             create_render_figure(
                 render_df,
