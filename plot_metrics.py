@@ -190,6 +190,7 @@ regexes = [
         cast=str,
         default="",
     ),
+    Param(name="eval_all", pattern=r"_(evalall)", cast=str, default=""),
     Param(
         name="ft_cams",
         pattern=r"_ftcams-([^_]+)",
