@@ -1200,13 +1200,12 @@ def plot_metric_combinations(
         return
 
     num_plots = len(valid_y) * len(valid_x)
-    fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5))
-
-    # Standardize axes to 1D array for easy iteration
-    if num_plots == 1:
-        axes = [axes]
-    else:
-        axes = axes.flatten()
+    ncols_c = min(3, num_plots)  # at most 3 columns
+    nrows_c = -(-num_plots // ncols_c)
+    fig, axes = plt.subplots(nrows_c, ncols_c, figsize=(6 * ncols_c, 5 * nrows_c), squeeze=False)
+    axes = axes.flatten()
+    for _ax in axes[num_plots:]:
+        _ax.axis("off")
 
     if title:
         fig.suptitle(f"{title} - Metric Combinations", fontsize=16)
