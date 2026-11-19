@@ -1,6 +1,8 @@
 """Pairwise correspondences from the original VGGT track head, for the 3R-GS epipolar loss.
 
-For every frame i (as the query frame) a fixed grid of ~`n_points` query points is tracked into all other frames j > i.
+For every frame i (as the query frame) a fixed grid of ~`n_points` query points is tracked into all other frames j > i
+(all pairs), or with `--knn K` into its K nearest frames by Omega camera centre (sparse graph, each pair once; the VGGT
+aggregator then only sees the K+1 frames of the window).
 Per pair (i, j) the file holds the query points in frame i, the tracked points in frame j (both in pixels of the
 original training images, the camera frame of the trainer), the track-head visibility and confidence of both frames, the
 pair weight `conf_i * conf_j / max(conf_i * conf_j)` (max over the pair's points) and the mask `weight > mask_threshold`.
@@ -39,7 +41,16 @@ def grid_points(x1: float, y1: float, x2: float, y2: float, n_points: int) -> np
     return np.stack([gx.ravel(), gy.ravel()], axis=-1)
 
 
-def run(cache_file: str, image_dir: str, out: str, n_points: int, mask_threshold: float, chunk: int = 50):
+def knn_graph(extrinsic: np.ndarray, k: int) -> list:
+    """k nearest frames (Euclidean distance between camera centres) of every frame, from w2c extrinsics [S,3,4]."""
+    R, t = extrinsic[:, :, :3], extrinsic[:, :, 3]
+    centres = -np.einsum("sji,sj->si", R, t)  # -R^T t
+    d = np.linalg.norm(centres[:, None] - centres[None], axis=-1)
+    np.fill_diagonal(d, np.inf)
+    return [list(np.argsort(d[i])[:k]) for i in range(len(d))]
+
+
+def run(cache_file: str, image_dir: str, out: str, n_points: int, mask_threshold: float, chunk: int = 50, knn: int = 0):
     cache = torch.load(cache_file, map_location="cpu", weights_only=False)
     names = list(cache["base_image_path_list"])
     sizes = np.asarray(cache["original_coords"])[:, -2:]  # (w, h) of the training images
@@ -69,9 +80,16 @@ def run(cache_file: str, image_dir: str, out: str, n_points: int, mask_threshold
     to_px = lambda p, j: (p - box[j, :2]) * (wh[j] / (box[j, 2:] - box[j, :2]))  # RES frame -> image pixels
 
     grids = [grid_points(*box[i], n_points) for i in range(S)]
+    if knn:  # sparse graph: frame i is tracked into its k nearest frames (by Omega camera centre); each pair once
+        nbrs = knn_graph(np.asarray(cache["extrinsic"]), knn)
+        windows = [[i] + nbrs[i] for i in range(S)]
+        edges = [(i, j) for i in range(S) for j in nbrs[i] if not (i in nbrs[j] and j < i)]
+    else:  # all pairs: frame i is tracked into all other frames, pairs (i, j) with j > i
+        windows = [[i] + [j for j in range(S) if j != i] for i in range(S)]
+        edges = list(combinations(range(S), 2))
     track_all, vis_all, conf_all = [], [], []
     for i in range(S):
-        order = [i] + [j for j in range(S) if j != i]  # the query frame has to be the first frame
+        order = windows[i]  # the query frame has to be the first frame
         q = torch.from_numpy(grids[i]).float()[None].to(device)
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=dtype):
             tokens, patch_start = model.aggregator(images[order][None])
@@ -84,23 +102,24 @@ def run(cache_file: str, image_dir: str, out: str, n_points: int, mask_threshold
                 tr, vi_, co = model.track_head(tokens, images=images[order][None], patch_start_idx=patch_start, query_points=qc)
             outs.append((tr[-1][0].float().cpu().numpy(), vi_[0].float().cpu().numpy(), co[0].float().cpu().numpy()))
         del tokens
-        inv = np.argsort(order)  # back to the original frame order
-        track_all.append(np.concatenate([o[0] for o in outs], axis=1)[inv])  # [S,N,2], RES frame
-        vis_all.append(np.concatenate([o[1] for o in outs], axis=1)[inv])
-        conf_all.append(np.concatenate([o[2] for o in outs], axis=1)[inv])
+        pos = {f: k for k, f in enumerate(order)}  # frame -> position in this query's window
+        track_all.append((pos, np.concatenate([o[0] for o in outs], axis=1)))  # [W,N,2], RES frame
+        vis_all.append(np.concatenate([o[1] for o in outs], axis=1))
+        conf_all.append(np.concatenate([o[2] for o in outs], axis=1))
         print(f"query frame {i + 1}/{S}", flush=True)
 
     ei, ej, pi, pj, ci, cj, vi, vj, wgt, msk = [], [], [], [], [], [], [], [], [], []
-    for i, j in combinations(range(S), 2):
+    for i, j in edges:
+        pos, tr = track_all[i]
         ei.append(i)
         ej.append(j)
         pi.append(to_px(grids[i], i))
-        pj.append(to_px(track_all[i][j], j))
-        ci.append(conf_all[i][i])
-        cj.append(conf_all[i][j])
-        vi.append(vis_all[i][i])
-        vj.append(vis_all[i][j])
-        c = conf_all[i][i] * conf_all[i][j]
+        pj.append(to_px(tr[pos[j]], j))
+        ci.append(conf_all[i][0])
+        cj.append(conf_all[i][pos[j]])
+        vi.append(vis_all[i][0])
+        vj.append(vis_all[i][pos[j]])
+        c = conf_all[i][0] * conf_all[i][pos[j]]
         w = c / max(c.max(), 1e-12)  # normalised by the max of the pair
         wgt.append(w)
         msk.append(w > mask_threshold)
@@ -120,6 +139,7 @@ def run(cache_file: str, image_dir: str, out: str, n_points: int, mask_threshold
             "weight": f(wgt),
             "mask": torch.from_numpy(np.stack(msk)),
             "n_points": n_points,
+            "knn": knn,
             "mask_threshold": mask_threshold,
             "res": RES,
         },
@@ -135,5 +155,6 @@ if __name__ == "__main__":
     ap.add_argument("--out", required=True)
     ap.add_argument("--n_points", type=int, default=417)
     ap.add_argument("--mask_threshold", type=float, default=0.5)
+    ap.add_argument("--knn", type=int, default=0, help="k nearest frames by Omega camera centre; 0 = all pairs")
     a = ap.parse_args()
-    run(a.cache_file, a.image_dir, a.out, a.n_points, a.mask_threshold)
+    run(a.cache_file, a.image_dir, a.out, a.n_points, a.mask_threshold, knn=a.knn)
