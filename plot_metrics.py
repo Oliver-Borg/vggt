@@ -191,6 +191,10 @@ regexes = [
         default="",
     ),
     Param(name="eval_all", pattern=r"_(evalall)", cast=str, default=""),
+    Param(name="test_pose_opt", pattern=r"_(tpo)", cast=str, default=""),
+    Param(name="shared_k", pattern=r"_(meank)|_(intropt)", cast=str, default=""),
+    Param(name="k_fixed_change", pattern=r"_kfix([+-][0-9.]+)", cast=float, default=0.0),
+    Param(name="k_random_change", pattern=r"_krand([0-9.]+)", cast=float, default=0.0),
     Param(
         name="ft_cams",
         pattern=r"_ftcams-([^_]+)",
