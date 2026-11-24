@@ -2573,6 +2573,7 @@ def plot_graph(
         render_out_base = Path(suffix + "_renders")
         # Use render_folders to filter df based on "folder" column
         render_df = df[df["gsplat_folder"].isin(render_folders)]
+        render_df = render_df.drop_duplicates(subset=["gsplat_folder", "val_step"])  # rows copied by shared_series_value
 
         if not render_df.empty:
             render_df = render_df[render_df["val_step"] == max(render_df["val_step"])]
