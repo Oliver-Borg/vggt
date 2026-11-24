@@ -582,6 +582,13 @@ def load_metrics_to_df(
 
     df_merged = df.groupby(valid_group_cols, dropna=False, observed=True).first().reset_index()
 
+    if "k_fixed_change" in df_merged.columns and "k_random_change" in df_merged.columns:
+        df_merged["k_series"] = np.select(
+            [df_merged["k_random_change"] > 0, df_merged["k_fixed_change"] < 0, df_merged["k_fixed_change"] > 0],
+            ["random per view", "fixed, negative change", "fixed, positive change"],
+            default="no change",
+        )
+
     return convert_to_nullable_ints(df_merged)
 
 
@@ -697,6 +704,11 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "eval_rte": data.get("eval_rte"),
         "eval_rre": data.get("eval_rre"),
         "train_rre": data.get("train_rot_err_mean_deg"),
+        "k_abs_err": (
+            0.5 * (data["train_k_fx_change_abs_mean_pct"] + data["train_k_fy_change_abs_mean_pct"])
+            if "train_k_fx_change_abs_mean_pct" in data and "train_k_fy_change_abs_mean_pct" in data
+            else None
+        ),
         "train_rte": data.get("train_trans_err_mean_pct"),
         "raw_metrics": data.get("raw_metrics"),
         "depth_l1": data.get("depth_l1"),
@@ -2051,6 +2063,7 @@ def plot_graph(
     only_best_rows: bool = False,
     merge_series: bool = False,
     x_symlog: float | None = None,
+    shared_series_value: str | None = None,
 ):
     if isinstance(split_dataset, bool):
         split_dataset = "individual" if split_dataset else "none"
@@ -2110,6 +2123,14 @@ def plot_graph(
     if sort_cols:
         df = df.sort_values(by=sort_cols)
         # df = df.sort_values(by=sort_cols, ascending=False)
+
+    if shared_series_value is not None and valid_split_cols:
+        # rows of this split value (e.g. the unperturbed baseline) are copied into every other series as its start point
+        col = valid_split_cols[0]
+        shared = df[df[col] == shared_series_value]
+        others = [v for v in df[col].dropna().unique() if v != shared_series_value]
+        df = pd.concat([df[df[col] != shared_series_value]] + [shared.assign(**{col: v}) for v in others], ignore_index=True)
+        df = df.sort_values(by=[c for c in sort_cols if c in df.columns])
 
     if valid_split_cols:
         if "series_label_override" in valid_split_cols:
@@ -2245,6 +2266,7 @@ def plot_graph(
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
+        {"y": "k_abs_err", "title": "Training-focal mean abs. change", "ylabel": "%"},
         {"y": "train_rre", "title": "Training-camera RRE (injected) ↓", "ylabel": "Degrees", "direction": "↓"},
         {"y": "train_rte", "title": "Training-camera RTE (injected) ↓", "ylabel": "% of scene scale", "direction": "↓"},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
@@ -2421,6 +2443,9 @@ def plot_graph(
         if x_symlog is not None:
             ax.set_xscale("symlog", linthresh=x_symlog)
             ticks = sorted(plot_df[x_axis].dropna().unique())
+            if len(ticks) > 6:  # too many distinct x values (e.g. realised errors): use round ticks within the data range
+                lo, hi = min(ticks), max(ticks)
+                ticks = [t for t in (0, 0.1, 1, 5, 10, 50, 100) if lo <= t <= hi * 1.05]
             ax.set_xticks(ticks)
             ax.set_xticklabels([f"{t:g}" for t in ticks])
             ax.minorticks_off()
