@@ -2458,7 +2458,7 @@ def plot_graph(
                 if l not in handles_dict:
                     handles_dict[l] = h
 
-        if handles_dict:
+        if len(handles_dict) > 1:  # no legend for a single series
             # Reorder handles and labels based on the natural sorted order of unique_series
             ordered_labels = [s for s in unique_series if s in handles_dict]
 
