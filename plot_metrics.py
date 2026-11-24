@@ -696,6 +696,8 @@ def _parse_gsplat_json(data: Dict[str, float], filename: str) -> Dict[str, float
         "val_step": int(filename.split("val_step")[-1].split(".json")[0]),
         "eval_rte": data.get("eval_rte"),
         "eval_rre": data.get("eval_rre"),
+        "train_rre": data.get("train_rot_err_mean_deg"),
+        "train_rte": data.get("train_trans_err_mean_pct"),
         "raw_metrics": data.get("raw_metrics"),
         "depth_l1": data.get("depth_l1"),
         "depth_abs_rel": data.get("depth_abs_rel"),
@@ -2047,6 +2049,8 @@ def plot_graph(
     show_zoom: bool = True,
     show_alt_frames: bool = False,
     only_best_rows: bool = False,
+    merge_series: bool = False,
+    x_symlog: float | None = None,
 ):
     if isinstance(split_dataset, bool):
         split_dataset = "individual" if split_dataset else "none"
@@ -2125,6 +2129,11 @@ def plot_graph(
         else:
             df["plot_series"] = df["method"]
             unique_splits = ["colmap", "vggt", "gt", "combined"]
+
+    if merge_series:
+        # one line through all runs (series_label_override stays available for the renders)
+        df["plot_series"] = "runs"
+        unique_splits = ["runs"]
 
     unique_series = df["plot_series"].unique().tolist()
 
@@ -2236,6 +2245,8 @@ def plot_graph(
         {"y": "num_GS", "title": "Final Gaussian Count", "ylabel": "Count"},
         {"y": "eval_rre", "title": "Validation Step RRE ↓", "ylabel": "Degrees", "direction": "↓", "ylog": True},
         {"y": "eval_rte", "title": "Validation Step RTE ↓", "ylabel": "Norm. Units", "direction": "↓", "ylog": True},
+        {"y": "train_rre", "title": "Training-camera RRE (injected) ↓", "ylabel": "Degrees", "direction": "↓"},
+        {"y": "train_rte", "title": "Training-camera RTE (injected) ↓", "ylabel": "% of scene scale", "direction": "↓"},
         {"y": "num_aligned", "title": "Aligned Cameras ↑", "ylabel": "Count", "direction": "↑"},
         {"y": "real_num_points", "title": "Initial Points", "ylabel": "Count"},
         {"y": "depth_l1", "title": "Splatted Depth L1 ↓", "ylabel": "Loss", "direction": "↓"},
@@ -2407,6 +2418,12 @@ def plot_graph(
             plot_raw=plot_raw,
             hue_order=unique_series,
         )
+        if x_symlog is not None:
+            ax.set_xscale("symlog", linthresh=x_symlog)
+            ticks = sorted(plot_df[x_axis].dropna().unique())
+            ax.set_xticks(ticks)
+            ax.set_xticklabels([f"{t:g}" for t in ticks])
+            ax.minorticks_off()
 
     if single_legend:
         handles_dict = OrderedDict()
